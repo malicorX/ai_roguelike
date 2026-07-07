@@ -131,6 +131,103 @@ class OrchestratorTest(unittest.TestCase):
         self.assertIn("Do not invent paths", builder_contexts[0])
         self.assertIn("Do not claim tests were run", builder_contexts[0])
 
+    def test_pilot_cycle_blocks_invalid_builder_proposal_before_evaluation(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            repo = Path(tmpdir)
+            state_dir = repo / "studio" / "state"
+            roles_dir = repo / "studio" / "roles"
+            game = repo / "game"
+            game.mkdir(parents=True)
+            roles_dir.mkdir(parents=True)
+            self._write_success_npm(game)
+
+            def fake_role_runner(*args: object, **_kwargs: object) -> str:
+                role = args[2]
+                if role == "director":
+                    return "Objective: Improve movement observability."
+                if role == "builder":
+                    return "\n".join(
+                        [
+                            "Implementation summary: add movement logs.",
+                            "Proposed changed files:",
+                            "- `src/controllers/PlayerMovementController.js`",
+                            "Test Commands Run:",
+                            "npm test",
+                        ]
+                    )
+                raise AssertionError(f"Unexpected role: {role}")
+
+            with patch("studio.orchestrator._git_output") as git_output, patch("studio.orchestrator.EvaluationClient") as evaluation_client:
+                git_output.side_effect = ["main", "abc1234", "main", "abc1234"]
+                result = run_pilot_cycle(
+                    repo,
+                    state_dir,
+                    cycle_number=5,
+                    evaluation_target=EvaluationTarget.LOCAL,
+                    director_mode=DirectorMode.MODEL,
+                    studio_config=StudioConfig.from_model_string("director=test-model,builder=test-model"),
+                    roles_dir=roles_dir,
+                    role_runner=fake_role_runner,
+                )
+
+            lint_data = json.loads(result.proposal_lint_path.read_text(encoding="utf-8"))
+            report_data = json.loads(result.report_path.read_text(encoding="utf-8"))
+
+        self.assertTrue(result.blocked)
+        self.assertIn("Builder proposal lint failed.", result.blocking_reasons)
+        self.assertGreaterEqual(len(lint_data["issues"]), 2)
+        self.assertEqual(report_data["qa"]["verdict"], "REWORK")
+        evaluation_client.assert_not_called()
+
+    def test_pilot_cycle_allows_backticked_test_commands_with_real_paths(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            repo = Path(tmpdir)
+            state_dir = repo / "studio" / "state"
+            roles_dir = repo / "studio" / "roles"
+            game = repo / "game"
+            tests = game / "tests"
+            src = game / "src"
+            tests.mkdir(parents=True)
+            src.mkdir()
+            (tests / "engine.test.ts").write_text("export {};\n", encoding="utf-8")
+            (src / "engine.ts").write_text("export {};\n", encoding="utf-8")
+            roles_dir.mkdir(parents=True)
+            self._write_success_npm(game)
+
+            def fake_role_runner(*args: object, **_kwargs: object) -> str:
+                role = args[2]
+                if role == "director":
+                    return "Objective: Add movement observability."
+                if role == "builder":
+                    return "\n".join(
+                        [
+                            "Implementation summary: add debug logging.",
+                            "Proposed changed files:",
+                            "- `game/src/engine.ts`",
+                            "Recommended Test Commands:",
+                            "- `npm test -- game/tests/engine.test.ts`",
+                        ]
+                    )
+                raise AssertionError(f"Unexpected role: {role}")
+
+            with patch("studio.orchestrator._git_output") as git_output:
+                git_output.side_effect = ["main", "abc1234", "main", "abc1234"]
+                result = run_pilot_cycle(
+                    repo,
+                    state_dir,
+                    cycle_number=6,
+                    evaluation_target=EvaluationTarget.LOCAL,
+                    director_mode=DirectorMode.MODEL,
+                    studio_config=StudioConfig.from_model_string("director=test-model,builder=test-model"),
+                    roles_dir=roles_dir,
+                    role_runner=fake_role_runner,
+                )
+
+            lint_data = json.loads(result.proposal_lint_path.read_text(encoding="utf-8"))
+
+        self.assertFalse(result.blocked)
+        self.assertEqual(lint_data["verdict"], "PASS")
+
     def test_static_pilot_cycle_does_not_call_role_runner(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             repo = Path(tmpdir)

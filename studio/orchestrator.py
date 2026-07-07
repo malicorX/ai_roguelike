@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import argparse
+import json
+import re
 import subprocess
 import sys
 from dataclasses import dataclass
@@ -8,7 +10,7 @@ from enum import StrEnum
 from pathlib import Path
 from typing import Callable, Sequence
 
-from eval_lab.protocol import EvaluationRequest
+from eval_lab.protocol import DesignReport, EvaluationReport, EvaluationRequest, QaReport
 from studio.config import StudioConfig
 from studio.evaluation_client import EvaluationClient, EvaluationTarget
 from studio.role_runner import run_role
@@ -37,6 +39,7 @@ class DryCycleResult:
 class PilotCycleResult:
     director_path: Path
     builder_path: Path
+    proposal_lint_path: Path
     request_path: Path
     report_path: Path
     blocked: bool
@@ -117,11 +120,52 @@ def run_pilot_cycle(
     request = build_evaluation_request(repo_root, objective=selected_objective, spec=pilot_spec)
     request_path = state_dir / f"cycle-{cycle_number:04d}-request.json"
     report_path = state_dir / f"cycle-{cycle_number:04d}-report.json"
+    proposal_lint_path = state_dir / f"cycle-{cycle_number:04d}-proposal-lint.json"
+    proposal_issues = _lint_builder_proposal(repo_root, builder_output)
+    proposal_lint_path.write_text(
+        json.dumps(
+            {
+                "verdict": "REWORK" if proposal_issues else "PASS",
+                "issues": proposal_issues,
+            },
+            indent=2,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    if proposal_issues:
+        request_path.write_text(json.dumps(request.to_dict(), indent=2) + "\n", encoding="utf-8")
+        report = EvaluationReport(
+            request_branch=request.branch,
+            request_commit=request.commit,
+            qa=QaReport(
+                verdict="REWORK",
+                checks=["builder proposal lint"],
+                bugs=proposal_issues,
+                repro_steps=["Review the Builder proposal artifact and regenerate it with real repo paths and proposal-only wording."],
+            ),
+            design=DesignReport(
+                verdict="BACKLOG",
+                backlog_suggestions=["Keep proposal lint green before enabling repository-writing Builder cycles."],
+            ),
+        )
+        report_path.write_text(json.dumps(report.to_dict(), indent=2) + "\n", encoding="utf-8")
+        return PilotCycleResult(
+            director_path=state_dir / f"cycle-{cycle_number:04d}-director.md",
+            builder_path=builder_path,
+            proposal_lint_path=proposal_lint_path,
+            request_path=request_path,
+            report_path=report_path,
+            blocked=True,
+            blocking_reasons=["Builder proposal lint failed.", *report.blocking_reasons()],
+        )
+
     report = EvaluationClient(evaluation_target).evaluate(repo_root, request, state_dir, cycle_number)
 
     return PilotCycleResult(
         director_path=state_dir / f"cycle-{cycle_number:04d}-director.md",
         builder_path=builder_path,
+        proposal_lint_path=proposal_lint_path,
         request_path=request_path,
         report_path=report_path,
         blocked=report.blocks_merge(),
@@ -346,6 +390,32 @@ def _known_repo_files(repo_root: Path) -> list[str]:
             if path.is_file() and "studio/state" not in path.as_posix():
                 paths.add(path.relative_to(repo_root).as_posix())
     return sorted(paths)
+
+
+def _lint_builder_proposal(repo_root: Path, builder_output: str) -> list[str]:
+    issues: list[str] = []
+    for line in builder_output.splitlines():
+        normalized = line.strip()
+        lower = normalized.lower()
+        if "test commands run" in lower or "tests run" in lower:
+            if "not run" not in lower and "to run later" not in lower:
+                issues.append("Builder proposal claims tests were run in proposal-only mode.")
+        for proposed_path in re.findall(r"`([^`]+)`", normalized):
+            if not _looks_like_repo_path(proposed_path):
+                continue
+            if "new" in lower:
+                continue
+            if not (repo_root / proposed_path).is_file():
+                issues.append(f"Builder proposal references a non-existent path: {proposed_path}")
+    return issues
+
+
+def _looks_like_repo_path(value: str) -> bool:
+    if value.startswith(("http://", "https://")):
+        return False
+    if any(character.isspace() for character in value):
+        return False
+    return "/" in value or "\\" in value
 
 
 def _objective_from_director_output(output: str) -> str:

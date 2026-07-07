@@ -74,6 +74,7 @@ develop.ps1 --time 100h [--repo github.com/malicorx/ai_roguelike]
 - **Scope guard:** repo-only writes; no infra/secrets/deploy-credential access; contained runtime per agent.
 - **Health watchdog** (mirror the fleet_health pattern): monitors the loop *and* the deployed game (build health, error rate, "is it still playable"); red → pause the loop and log.
 - **Evaluation boundary:** sparky2 returns QA/design reports but does not write game code by default. sparky1 remains the only autonomous source-code writer.
+- **Proposal lint:** Builder proposals must reference real repo paths or explicitly mark new files, and must not claim tests ran while the loop is still proposal-only.
 - **Visual gate:** screenshot scenarios must preserve player/enemy/readability, UI clarity, palette coherence, and no blocking visual regressions.
 
 ## 8. Open questions (first Director cycle, or resolve at bootstrap)

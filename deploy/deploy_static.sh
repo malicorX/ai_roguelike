@@ -22,6 +22,8 @@ rsync -az --delete "$REPO_DIR/game/dist/" "$THEEBIE_HOST:$THEEBIE_SITE_DIR/"
 rsync -az --delete "$REPO_DIR/site/devlog/" "$THEEBIE_HOST:$THEEBIE_SITE_DIR/devlog/"
 rsync -az --delete "$REPO_DIR/site/docs/" "$THEEBIE_HOST:$THEEBIE_SITE_DIR/docs/"
 
+bash "$REPO_DIR/deploy/smoke_public.sh"
+
 echo "Deployed ai_roguelike to https://www.theebie.de/sites/roguelike/"
 echo "Devlog: https://www.theebie.de/sites/roguelike/devlog/"
 echo "Docs: https://www.theebie.de/sites/roguelike/docs/"

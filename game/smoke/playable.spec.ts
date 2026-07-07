@@ -4,6 +4,8 @@ test("boots and exposes deterministic playable state", async ({ page }) => {
   await page.goto("/");
 
   await expect(page.getByRole("heading", { name: "ai_roguelike" })).toBeVisible();
+  await expect(page.getByRole("link", { name: "Devlog" })).toBeVisible();
+  await expect(page.getByRole("link", { name: "Docs" })).toBeVisible();
   await expect(page.locator("#game")).toBeVisible();
 
   const initial = await page.evaluate(() => window.__AI_ROGUELIKE_TEST__?.snapshot());

@@ -219,6 +219,16 @@ def run_dry_cycle(
     )
 
 
+def next_cycle_number(state_dir: Path) -> int:
+    numbers: set[int] = set()
+    if state_dir.is_dir():
+        for path in state_dir.glob("cycle-*-director.md"):
+            match = re.match(r"cycle-(\d+)-director\.md$", path.name)
+            if match:
+                numbers.add(int(match.group(1)))
+    return (max(numbers) + 1) if numbers else 1
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Run the ai_roguelike sparky1 studio orchestrator.")
     parser.add_argument("--repo-root", type=Path, default=Path(__file__).resolve().parents[1])
@@ -239,8 +249,10 @@ def main(argv: Sequence[str] | None = None) -> int:
     director_mode = DirectorMode(args.director_mode)
 
     cycles = max(1, args.max_cycles)
+    start_cycle = next_cycle_number(state_dir)
     last_blocked = False
-    for cycle_number in range(1, cycles + 1):
+    for offset in range(cycles):
+        cycle_number = start_cycle + offset
         if (state_dir / "STOP").exists():
             print(f"STOP file found at {state_dir / 'STOP'}; exiting before cycle {cycle_number}.")
             break

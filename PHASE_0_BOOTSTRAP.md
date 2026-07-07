@@ -162,4 +162,6 @@ Everything else (procgen, items, biomes, meta-progression, art) is what the stud
 - [x] Land `develop.ps1`.
 - [x] Dry-run: `develop.ps1 -Time 30m -MaxCycles 1` → confirm one safe no-write Director model cycle delegates evaluation to sparky2 and records director/request/report artifacts.
 - [x] Phase 1 pilot: `develop.ps1 -FullLoop -Time 30m -MaxCycles 1` runs Director + Builder artifact generation, delegates evaluation to sparky2, and honors `studio/state/STOP` without allowing repository code writes.
+- [x] Public devlog + docs at `/sites/roguelike/devlog/` and `/sites/roguelike/docs/`; post-deploy smoke checks game, devlog, and docs.
+- [x] Pilot cycles auto-increment from existing `studio/state/` artifacts so reruns do not overwrite history.
 - [ ] Hand off: `develop.ps1 -FullLoop -Time 100h`.

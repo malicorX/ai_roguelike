@@ -6,7 +6,7 @@ from unittest.mock import patch
 
 from studio.evaluation_client import EvaluationTarget
 from studio.config import StudioConfig
-from studio.orchestrator import DirectorMode, build_evaluation_request, main, run_dry_cycle, run_pilot_cycle
+from studio.orchestrator import DirectorMode, build_evaluation_request, main, next_cycle_number, run_dry_cycle, run_pilot_cycle
 
 
 class OrchestratorTest(unittest.TestCase):
@@ -414,6 +414,40 @@ class OrchestratorTest(unittest.TestCase):
 
         self.assertEqual(exit_code, 0)
         pilot_cycle.assert_not_called()
+
+    def test_next_cycle_number_starts_after_latest_artifact(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            state_dir = Path(tmpdir)
+            (state_dir / "cycle-0003-director.md").write_text("Objective: test\n", encoding="utf-8")
+
+            self.assertEqual(next_cycle_number(state_dir), 4)
+
+    def test_main_continues_cycle_number_from_existing_state(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            repo = Path(tmpdir)
+            state_dir = repo / "studio" / "state"
+            state_dir.mkdir(parents=True)
+            (state_dir / "cycle-0002-director.md").write_text("Objective: test\n", encoding="utf-8")
+
+            with patch("studio.orchestrator.run_pilot_cycle") as pilot_cycle:
+                pilot_cycle.return_value.blocked = False
+                pilot_cycle.return_value.report_path = state_dir / "cycle-0003-report.json"
+                exit_code = main(
+                    [
+                        "--repo-root",
+                        str(repo),
+                        "--state-dir",
+                        str(state_dir),
+                        "--max-cycles",
+                        "1",
+                        "--evaluation-target",
+                        "local",
+                    ]
+                )
+
+        self.assertEqual(exit_code, 0)
+        pilot_cycle.assert_called_once()
+        self.assertEqual(pilot_cycle.call_args.kwargs["cycle_number"], 3)
 
     def _write_success_npm(self, game: Path) -> None:
         script = game / ("npm.cmd" if _is_windows() else "npm")

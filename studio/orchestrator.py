@@ -13,6 +13,16 @@ from typing import Callable, Sequence
 from eval_lab.protocol import DesignReport, EvaluationReport, EvaluationRequest, QaReport
 from studio.config import StudioConfig
 from studio.evaluation_client import EvaluationClient, EvaluationTarget
+from studio.git_ops import (
+    GitOperationError,
+    changed_files_against_main,
+    create_cycle_branch,
+    discard_branch,
+    merge_branch_to_main,
+    push_main,
+    stage_all_and_commit,
+)
+from studio.patch_applier import PatchApplyError, PatchExtractError, apply_unified_diff, extract_unified_diff
 from studio.publish_devlog import publish_site
 from studio.role_runner import run_role
 
@@ -45,6 +55,9 @@ class PilotCycleResult:
     report_path: Path
     blocked: bool
     blocking_reasons: list[str]
+    apply_path: Path | None = None
+    merge_path: Path | None = None
+    branch: str | None = None
 
 
 def build_evaluation_request(
@@ -78,6 +91,8 @@ def run_pilot_cycle(
     roles_dir: Path | None = None,
     role_runner: RoleRunner = run_role,
     role_timeout_seconds: int = 600,
+    apply_writes: bool = False,
+    deploy: bool = False,
 ) -> PilotCycleResult:
     state_dir.mkdir(parents=True, exist_ok=True)
     studio_config = studio_config or StudioConfig()
@@ -105,20 +120,22 @@ def run_pilot_cycle(
         roles_dir=roles_dir,
         role_runner=role_runner,
         role_timeout_seconds=role_timeout_seconds,
+        apply_writes=apply_writes,
     )
     builder_path = state_dir / f"cycle-{cycle_number:04d}-builder.md"
     builder_path.write_text(builder_output.rstrip() + "\n", encoding="utf-8")
 
     pilot_spec = "\n".join(
         [
-            "Phase 1 pilot: no repository writes are applied by the orchestrator yet.",
+            "Phase 1 pilot: no repository writes are applied by the orchestrator yet."
+            if not apply_writes
+            else "Phase 1 write cycle: repository changes may be applied on a feature branch after proposal lint passes.",
             spec,
             "",
             "Builder proposal:",
             builder_output.strip(),
         ]
     )
-    request = build_evaluation_request(repo_root, objective=selected_objective, spec=pilot_spec)
     request_path = state_dir / f"cycle-{cycle_number:04d}-request.json"
     report_path = state_dir / f"cycle-{cycle_number:04d}-report.json"
     proposal_lint_path = state_dir / f"cycle-{cycle_number:04d}-proposal-lint.json"
@@ -135,6 +152,7 @@ def run_pilot_cycle(
         encoding="utf-8",
     )
     if proposal_issues:
+        request = build_evaluation_request(repo_root, objective=selected_objective, spec=pilot_spec)
         request_path.write_text(json.dumps(request.to_dict(), indent=2) + "\n", encoding="utf-8")
         report = EvaluationReport(
             request_branch=request.branch,
@@ -161,6 +179,22 @@ def run_pilot_cycle(
             blocking_reasons=["Builder proposal lint failed.", *report.blocking_reasons()],
         )
 
+    if apply_writes:
+        return _run_write_cycle(
+            repo_root,
+            state_dir,
+            cycle_number=cycle_number,
+            objective=selected_objective,
+            spec=spec,
+            builder_output=builder_output,
+            evaluation_target=evaluation_target,
+            deploy=deploy,
+            director_path=state_dir / f"cycle-{cycle_number:04d}-director.md",
+            builder_path=builder_path,
+            proposal_lint_path=proposal_lint_path,
+        )
+
+    request = build_evaluation_request(repo_root, objective=selected_objective, spec=pilot_spec)
     report = EvaluationClient(evaluation_target).evaluate(repo_root, request, state_dir, cycle_number)
 
     return PilotCycleResult(
@@ -241,6 +275,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--director-mode", choices=[mode.value for mode in DirectorMode], default=DirectorMode.STATIC.value)
     parser.add_argument("--role-timeout-seconds", type=int, default=600)
     parser.add_argument("--dry-run", action="store_true", help="Run one safe local evaluation cycle.")
+    parser.add_argument("--apply-writes", action="store_true", help="Apply Builder diffs on feature branches and merge on green evaluation.")
     args = parser.parse_args(argv)
 
     studio_config = StudioConfig.from_model_string(args.models)
@@ -279,11 +314,14 @@ def main(argv: Sequence[str] | None = None) -> int:
             director_mode=director_mode,
             studio_config=studio_config,
             role_timeout_seconds=args.role_timeout_seconds,
+            apply_writes=args.apply_writes,
+            deploy=_deploy_enabled(args.deploy),
         )
         last_blocked = pilot_result.blocked
         print(
             f"cycle {cycle_number}: director={pilot_result.director_path} "
-            f"builder={pilot_result.builder_path} report={pilot_result.report_path} blocked={pilot_result.blocked}"
+            f"builder={pilot_result.builder_path} report={pilot_result.report_path} "
+            f"branch={pilot_result.branch} blocked={pilot_result.blocked}"
         )
         _publish_devlog(args.repo_root, state_dir)
 
@@ -294,6 +332,210 @@ def _publish_devlog(repo_root: Path, state_dir: Path) -> None:
     out_dir = repo_root / "site"
     result = publish_site(repo_root, state_dir, out_dir)
     print(f"published devlog: {result.devlog_index} ({result.cycle_count} cycles)")
+
+
+def _deploy_enabled(value: str) -> bool:
+    return value.strip().lower() in {"1", "true", "yes", "theebie"}
+
+
+def _run_deploy(repo_root: Path) -> None:
+    script = repo_root / "deploy" / "deploy_static.sh"
+    subprocess.run(["bash", str(script)], cwd=repo_root, check=True)
+
+
+def _run_write_cycle(
+    repo_root: Path,
+    state_dir: Path,
+    *,
+    cycle_number: int,
+    objective: str,
+    spec: str,
+    builder_output: str,
+    evaluation_target: EvaluationTarget,
+    deploy: bool,
+    director_path: Path,
+    builder_path: Path,
+    proposal_lint_path: Path,
+) -> PilotCycleResult:
+    request_path = state_dir / f"cycle-{cycle_number:04d}-request.json"
+    report_path = state_dir / f"cycle-{cycle_number:04d}-report.json"
+    apply_path = state_dir / f"cycle-{cycle_number:04d}-apply.json"
+    merge_path = state_dir / f"cycle-{cycle_number:04d}-merge.json"
+    branch: str | None = None
+
+    try:
+        diff = extract_unified_diff(builder_output)
+    except PatchExtractError as exc:
+        return _blocked_write_result(
+            repo_root,
+            state_dir,
+            cycle_number=cycle_number,
+            objective=objective,
+            spec=spec,
+            builder_output=builder_output,
+            director_path=director_path,
+            builder_path=builder_path,
+            proposal_lint_path=proposal_lint_path,
+            request_path=request_path,
+            report_path=report_path,
+            reasons=[str(exc)],
+            checks=["builder diff extraction"],
+        )
+
+    try:
+        branch = create_cycle_branch(repo_root, cycle_number, objective)
+        apply_unified_diff(repo_root, diff)
+        commit = stage_all_and_commit(repo_root, f"cycle {cycle_number}: {objective}")
+        changed_files = changed_files_against_main(repo_root)
+        apply_path.write_text(
+            json.dumps(
+                {
+                    "branch": branch,
+                    "commit": commit,
+                    "changed_files": changed_files,
+                    "verdict": "APPLIED",
+                },
+                indent=2,
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+    except (PatchApplyError, GitOperationError) as exc:
+        if branch is not None:
+            discard_branch(repo_root, branch)
+        return _blocked_write_result(
+            repo_root,
+            state_dir,
+            cycle_number=cycle_number,
+            objective=objective,
+            spec=spec,
+            builder_output=builder_output,
+            director_path=director_path,
+            builder_path=builder_path,
+            proposal_lint_path=proposal_lint_path,
+            request_path=request_path,
+            report_path=report_path,
+            reasons=[str(exc)],
+            checks=["builder diff apply"],
+        )
+
+    write_spec = "\n".join(
+        [
+            "Phase 1 write cycle: repository changes were applied on a feature branch before evaluation.",
+            spec,
+            "",
+            "Builder proposal:",
+            builder_output.strip(),
+        ]
+    )
+    request = EvaluationRequest(
+        branch=branch or "unknown",
+        commit=commit,
+        objective=objective,
+        spec=write_spec,
+        changed_files=changed_files,
+        seeds=list(DEFAULT_SEEDS),
+        focus=list(DEFAULT_FOCUS),
+    )
+    report = EvaluationClient(evaluation_target).evaluate(repo_root, request, state_dir, cycle_number)
+
+    if report.blocks_merge():
+        if branch is not None:
+            discard_branch(repo_root, branch)
+        return PilotCycleResult(
+            director_path=director_path,
+            builder_path=builder_path,
+            proposal_lint_path=proposal_lint_path,
+            request_path=request_path,
+            report_path=report_path,
+            blocked=True,
+            blocking_reasons=report.blocking_reasons(),
+            apply_path=apply_path,
+            branch=branch,
+        )
+
+    merge_branch_to_main(repo_root, branch or "unknown", message=f"Merge {branch}")
+    merge_path.write_text(
+        json.dumps(
+            {
+                "branch": branch,
+                "commit": commit,
+                "verdict": "MERGED",
+            },
+            indent=2,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    push_main(repo_root)
+    if deploy:
+        _run_deploy(repo_root)
+
+    return PilotCycleResult(
+        director_path=director_path,
+        builder_path=builder_path,
+        proposal_lint_path=proposal_lint_path,
+        request_path=request_path,
+        report_path=report_path,
+        blocked=False,
+        blocking_reasons=[],
+        apply_path=apply_path,
+        merge_path=merge_path,
+        branch=branch,
+    )
+
+
+def _blocked_write_result(
+    repo_root: Path,
+    state_dir: Path,
+    *,
+    cycle_number: int,
+    objective: str,
+    spec: str,
+    builder_output: str,
+    director_path: Path,
+    builder_path: Path,
+    proposal_lint_path: Path,
+    request_path: Path,
+    report_path: Path,
+    reasons: list[str],
+    checks: list[str],
+) -> PilotCycleResult:
+    write_spec = "\n".join(
+        [
+            "Phase 1 write cycle: repository writes were attempted but blocked before merge.",
+            spec,
+            "",
+            "Builder proposal:",
+            builder_output.strip(),
+        ]
+    )
+    request = build_evaluation_request(repo_root, objective=objective, spec=write_spec)
+    request_path.write_text(json.dumps(request.to_dict(), indent=2) + "\n", encoding="utf-8")
+    report = EvaluationReport(
+        request_branch=request.branch,
+        request_commit=request.commit,
+        qa=QaReport(
+            verdict="REWORK",
+            checks=checks,
+            bugs=reasons,
+            repro_steps=["Review the Builder diff artifact and regenerate a clean unified diff."],
+        ),
+        design=DesignReport(
+            verdict="BACKLOG",
+            backlog_suggestions=["Keep write-cycle diffs small and limited to the selected objective."],
+        ),
+    )
+    report_path.write_text(json.dumps(report.to_dict(), indent=2) + "\n", encoding="utf-8")
+    return PilotCycleResult(
+        director_path=director_path,
+        builder_path=builder_path,
+        proposal_lint_path=proposal_lint_path,
+        request_path=request_path,
+        report_path=report_path,
+        blocked=True,
+        blocking_reasons=["Write cycle blocked before evaluation.", *reasons],
+    )
 
 
 def _git_output(repo_root: Path, *args: str) -> str:
@@ -346,9 +588,19 @@ def _run_director(
     return director_output
 
 
-def _builder_context(repo_root: Path, objective: str, director_output: str) -> str:
+def _builder_context(repo_root: Path, objective: str, director_output: str, *, apply_writes: bool = False) -> str:
     file_summary = "\n".join(f"- {path}" for path in _known_repo_files(repo_root))
     command_summary = "\n".join(f"- {command}" for command in _known_test_commands(repo_root))
+    mode_line = (
+        "Mode: Phase 1 write cycle. Return an implementation summary and a unified diff in a ```diff fenced block."
+        if apply_writes
+        else "Mode: Phase 1 pilot. Return an implementation proposal only; do not claim files were changed."
+    )
+    extra_rules = (
+        "The unified diff must apply cleanly with git apply. Include only files needed for the objective."
+        if apply_writes
+        else "Do not claim tests were run. You may recommend test commands to run later."
+    )
     return "\n".join(
         [
             f"Selected objective: {objective}",
@@ -356,9 +608,9 @@ def _builder_context(repo_root: Path, objective: str, director_output: str) -> s
             "Director output:",
             director_output.strip(),
             "",
-            "Mode: Phase 1 pilot. Return an implementation proposal only; do not claim files were changed.",
+            mode_line,
             "Do not invent paths. Proposed changed files must be listed below, or explicitly labeled as NEW.",
-            "Do not claim tests were run. You may recommend test commands to run later.",
+            extra_rules,
             "",
             "Known existing paths:",
             file_summary,
@@ -379,6 +631,7 @@ def _run_builder(
     roles_dir: Path,
     role_runner: RoleRunner,
     role_timeout_seconds: int,
+    apply_writes: bool = False,
 ) -> str:
     if director_mode == DirectorMode.STATIC:
         return "\n".join(
@@ -393,7 +646,7 @@ def _run_builder(
         studio_config,
         roles_dir,
         "builder",
-        _builder_context(repo_root, objective, director_output),
+        _builder_context(repo_root, objective, director_output, apply_writes=apply_writes),
         timeout_seconds=role_timeout_seconds,
     )
 

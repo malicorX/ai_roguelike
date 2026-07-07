@@ -1,4 +1,5 @@
 import json
+import subprocess
 import tempfile
 import unittest
 from pathlib import Path
@@ -55,6 +56,35 @@ class EvaluateCandidateTest(unittest.TestCase):
         self.assertTrue(report.blocks_merge())
         self.assertIn("npm test failed", report.qa.bugs)
 
+    def test_evaluate_candidate_checkouts_requested_branch_before_running_checks(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            repo = Path(tmpdir)
+            game = repo / "game"
+            game.mkdir()
+            _init_repo(repo)
+            self._write_failing_npm(game)
+            _git(repo, "add", "game")
+            _git(repo, "commit", "-m", "main")
+
+            _git(repo, "checkout", "-b", "cycle-9")
+            self._write_success_npm(game)
+            _git(repo, "add", "game")
+            _git(repo, "commit", "-m", "candidate")
+            candidate_commit = _git_output(repo, "rev-parse", "--short", "HEAD")
+            _git(repo, "checkout", "main")
+
+            request = EvaluationRequest(
+                branch="cycle-9",
+                commit=candidate_commit,
+                objective="Evaluate candidate branch",
+                spec="Run checks on the branch checkout.",
+            )
+
+            report = evaluate_candidate(repo, request)
+
+            self.assertEqual(report.qa.verdict, "PASS")
+            self.assertEqual(_git_output(repo, "rev-parse", "--abbrev-ref", "HEAD"), "main")
+
     def _write_success_npm(self, game: Path) -> None:
         self._write_fake_npm(game, exit_code=0)
 
@@ -73,6 +103,21 @@ class EvaluateCandidateTest(unittest.TestCase):
 
 def _is_windows() -> bool:
     return __import__("os").name == "nt"
+
+
+def _init_repo(repo: Path) -> None:
+    _git(repo, "init")
+    _git(repo, "config", "user.email", "test@example.com")
+    _git(repo, "config", "user.name", "test")
+    _git(repo, "branch", "-M", "main")
+
+
+def _git(repo: Path, *args: str) -> None:
+    subprocess.run(["git", *args], cwd=repo, check=True, capture_output=True, text=True)
+
+
+def _git_output(repo: Path, *args: str) -> str:
+    return subprocess.check_output(["git", *args], cwd=repo, text=True).strip()
 
 
 if __name__ == "__main__":

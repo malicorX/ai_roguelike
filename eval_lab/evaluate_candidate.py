@@ -16,12 +16,17 @@ def evaluate_candidate(repo_root: Path, request: EvaluationRequest) -> Evaluatio
     checks = ["npm test", "npm run build", "npm run smoke"]
     bugs: list[str] = []
     repro_steps: list[str] = []
+    previous_head = _checkout_candidate(repo_root, request)
 
-    for check in checks:
-        result = _run_check(check, game_dir)
-        if result.returncode != 0:
-            bugs.append(f"{check} failed")
-            repro_steps.append(f"cd game && {check}")
+    try:
+        for check in checks:
+            result = _run_check(check, game_dir)
+            if result.returncode != 0:
+                bugs.append(f"{check} failed")
+                repro_steps.append(f"cd game && {check}")
+    finally:
+        if previous_head is not None:
+            _run_git(repo_root, "checkout", previous_head)
 
     qa = QaReport(
         verdict="REWORK" if bugs else "PASS",
@@ -79,6 +84,36 @@ def _check_env(game_dir: Path) -> dict[str, str]:
     env["PATH"] = next_path
     env["Path"] = next_path
     return env
+
+
+def _checkout_candidate(repo_root: Path, request: EvaluationRequest) -> str | None:
+    if not (repo_root / ".git").exists():
+        return None
+    previous_branch = _git_output(repo_root, "rev-parse", "--abbrev-ref", "HEAD")
+    restore_ref = previous_branch if previous_branch != "HEAD" else _git_output(repo_root, "rev-parse", "HEAD")
+    if request.branch == previous_branch and request.commit == _git_output(repo_root, "rev-parse", "--short", "HEAD"):
+        return None
+    if request.branch == "main" and previous_branch == "main" and request.commit == _git_output(repo_root, "rev-parse", "--short", "HEAD"):
+        return None
+
+    subprocess.run(["git", "fetch", "-q", "origin"], cwd=repo_root, check=False)
+    for ref in (request.commit, request.branch):
+        result = subprocess.run(["git", "checkout", ref], cwd=repo_root, capture_output=True, text=True, check=False)
+        if result.returncode == 0:
+            return restore_ref
+    raise RuntimeError(f"Unable to checkout candidate {request.branch}@{request.commit}")
+
+
+def _git_output(repo_root: Path, *args: str) -> str:
+    return _run_git(repo_root, *args).stdout.strip()
+
+
+def _run_git(repo_root: Path, *args: str) -> subprocess.CompletedProcess[str]:
+    result = subprocess.run(["git", *args], cwd=repo_root, text=True, capture_output=True, check=False)
+    if result.returncode != 0:
+        detail = (result.stderr or result.stdout).strip()
+        raise RuntimeError(detail or f"git {' '.join(args)} failed")
+    return result
 
 
 if __name__ == "__main__":

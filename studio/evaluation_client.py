@@ -48,19 +48,26 @@ class EvaluationClient:
             report_path.write_text(json.dumps(report.to_dict(), indent=2) + "\n", encoding="utf-8")
             return report
 
+        if request.branch != "main":
+            from studio.git_ops import push_branch
+
+            push_branch(repo_root, request.branch)
+
         self._evaluate_on_sparky2(request_path, report_path, cycle_number)
         return EvaluationReport.from_dict(json.loads(report_path.read_text(encoding="utf-8")))
 
     def _evaluate_on_sparky2(self, request_path: Path, report_path: Path, cycle_number: int) -> None:
+        request = EvaluationRequest.from_dict(json.loads(request_path.read_text(encoding="utf-8")))
         remote_request = f"{self.remote_repo}/eval_lab/reports/cycle-{cycle_number:04d}-request.json"
         remote_report = f"{self.remote_repo}/eval_lab/reports/cycle-{cycle_number:04d}-report.json"
-        self._run_command(
-            [
-                "ssh",
-                self.remote_host,
-                f"cd {self.remote_repo} && git fetch -q origin && git merge --ff-only origin/main && mkdir -p eval_lab/reports",
-            ]
-        )
+        if request.branch == "main":
+            sync_command = f"cd {self.remote_repo} && git fetch -q origin && git merge --ff-only origin/main && mkdir -p eval_lab/reports"
+        else:
+            sync_command = (
+                f"cd {self.remote_repo} && git fetch -q origin {request.branch} && "
+                f"git checkout {request.commit} && mkdir -p eval_lab/reports"
+            )
+        self._run_command(["ssh", self.remote_host, sync_command])
         self._run_command(["scp", str(request_path), f"{self.remote_host}:{remote_request}"])
         self._run_command(
             [

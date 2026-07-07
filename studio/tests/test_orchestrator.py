@@ -4,6 +4,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
+from studio.evaluation_client import EvaluationTarget
 from studio.orchestrator import build_evaluation_request, run_dry_cycle
 
 
@@ -40,6 +41,7 @@ class OrchestratorTest(unittest.TestCase):
                     objective="Verify current build",
                     spec="Run deterministic local gates.",
                     cycle_number=1,
+                    evaluation_target=EvaluationTarget.LOCAL,
                 )
 
             request_data = json.loads(result.request_path.read_text(encoding="utf-8"))

@@ -19,14 +19,15 @@
 
 | Host | Role | Reach it via | Inference |
 |------|------|--------------|-----------|
-| **sparky1** | Hub / baseline GPU box (DGX Spark GB10, 119 GB unified) | `ssh sparky1` (from the sandbox) | Ollama `:11434` (qwen3:14b + nomic-embed) **and** llama-server `:8081` (Agents-A1, sami) |
-| **sparky2** | Second GPU box (DGX Spark GB10, 119 GB) | `ssh sparky2` (also `ssh sparky1 'ssh sparky2 …'`; internal IP `10.1.0.2`) | Ollama `:11435` (Agents-A1, tool-agents) **and** llama-server `:8081` (Agents-A1, sami) + shim `:8082` |
-| **theebie** | Production world backend (`https://www.theebie.de`) | **Only from sparky1**: `ssh root@84.38.65.246` | n/a (calls the sparkies) |
+| **sparky1** | ai_roguelike developer studio / hub (DGX Spark GB10, 119 GB unified) | `ssh sparky1` (from the sandbox) | Ollama `:11434` with `hf.co/InternScience/Agents-A1-Q4_K_M-GGUF:latest`; llama-server `:8081` remains available if needed |
+| **sparky2** | ai_roguelike evaluation lab (DGX Spark GB10, 119 GB) | `ssh sparky2` (also `ssh sparky1 'ssh sparky2 …'`; internal IP `10.1.0.2`) | Ollama `:11435` with `hf.co/InternScience/Agents-A1-Q4_K_M-GGUF:latest`; llama-server `:8081` remains available if needed |
+| **theebie** | Public playable runtime (`https://www.theebie.de`) | **Only from sparky1**: `ssh root@84.38.65.246` | n/a (hosts blessed builds) |
 | **cursorComputer** | Windows dev/hub machine | Reachable over SSH from the boxes; holds the M: working copies | n/a |
 
 **Data-flow direction matters:** the sparkies + gateways connect **out** to theebie. theebie
 **cannot** reach into the sparky LAN. sparky1 is the only host that can reach *both* boxes and
-theebie — so any cross-box orchestration (fleet_health gather, speed test) runs on **sparky1**.
+theebie — so ai_roguelike orchestration runs on **sparky1**. sparky2 receives candidate evaluation
+requests from sparky1 and returns QA/design reports; it does not write source by default.
 
 Git repos: **`ai_ai2ai`** (MoltWorld world backend), **`ai_selfaware`** (SAMI research agent), and
 **`ai_roguelike`** (this project). Remotes = `github.com/malicorX/{ai2ai,ai_selfaware,ai_roguelike}`.
@@ -99,6 +100,7 @@ Two runtimes coexist per box; that's intentional, not a bug (see §5.4).
 
 ### 5.1 Ollama
 - sparky1 `:11434`, sparky2 `:11435` (system `ollama.service`, models in `/usr/share/.ollama/models`).
+- ai_roguelike default model on both boxes: `hf.co/InternScience/Agents-A1-Q4_K_M-GGUF:latest`.
 - Serves the **tool-agents** (openclaw/hermes/copaw) + embeddings (`nomic-embed-text`).
 - Speaks its **native** API (`/api/chat`, `/api/tags`, `/api/show`) **and** an OpenAI-compat one
   (`:PORT/v1/…`). Has `OLLAMA_FLASH_ATTENTION=1`, `OLLAMA_KV_CACHE_TYPE=q8_0`, `KEEP_ALIVE=-1`.
@@ -124,8 +126,16 @@ Two runtimes coexist per box; that's intentional, not a bug (see §5.4).
 - **Tool-agents** (openclaw/hermes/copaw) → **Ollama** (fast there, no `<think>` leak). Their prompts
   reach 57–73 k tokens; llama-server processes the full prompt each step (~45 s) and times out, while
   Ollama masks it by truncating to 32 k. **Leave tool-agents on Ollama** unless you validate a fix.
-- **The roguelike studio agents** can use either lane — pick the no-think llama-server `:8081` for
-  clean structured output (design/code/review), fall back to Ollama for very long contexts.
+- **The roguelike studio agents** default to Ollama Agents-A1 on both boxes. sparky1 owns developer
+  roles; sparky2 owns evaluator/player/art-review roles. Switch selected structured roles to
+  llama-server only if Ollama repeatedly fails strict output contracts.
+
+### 5.5 ai_roguelike external reviewers
+
+Gemini and ChatGPT can be used as independent checkpoints outside the unattended loop: code review,
+security review, test strategy review, visual-quality critique, and architecture critique. Treat their
+findings as advisory input that sparky1 must verify before changes are accepted; they are not a direct
+merge authority.
 
 ### 5.4 "Does running both halve efficiency?" — no.
 One GPU is **shared**, not split. Concurrent generations slow each other only *during overlap*

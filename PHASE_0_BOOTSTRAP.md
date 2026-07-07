@@ -159,4 +159,5 @@ Everything else (procgen, items, biomes, meta-progression, art) is what the stud
 - [x] Land `eval_lab/` — candidate request schema, sparky2 runner, QA/design report schema.
 - [x] Land `develop.ps1`.
 - [x] Dry-run: `develop.ps1 -Time 30m -MaxCycles 1` → confirm one safe no-write Director model cycle delegates evaluation to sparky2 and records director/request/report artifacts.
-- [ ] Hand off: `develop.ps1 --time 100h`.
+- [x] Phase 1 pilot: `develop.ps1 -FullLoop -Time 30m -MaxCycles 1` runs Director + Builder artifact generation, delegates evaluation to sparky2, and honors `studio/state/STOP` without allowing repository code writes.
+- [ ] Hand off: `develop.ps1 -FullLoop -Time 100h`.

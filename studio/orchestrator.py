@@ -33,6 +33,16 @@ class DryCycleResult:
     blocking_reasons: list[str]
 
 
+@dataclass(frozen=True)
+class PilotCycleResult:
+    director_path: Path
+    builder_path: Path
+    request_path: Path
+    report_path: Path
+    blocked: bool
+    blocking_reasons: list[str]
+
+
 def build_evaluation_request(
     repo_root: Path,
     *,
@@ -48,6 +58,74 @@ def build_evaluation_request(
         changed_files=changed_files or [],
         seeds=list(DEFAULT_SEEDS),
         focus=list(DEFAULT_FOCUS),
+    )
+
+
+def run_pilot_cycle(
+    repo_root: Path,
+    state_dir: Path,
+    *,
+    objective: str = DEFAULT_OBJECTIVE,
+    spec: str = DEFAULT_SPEC,
+    cycle_number: int = 1,
+    evaluation_target: EvaluationTarget = EvaluationTarget.LOCAL,
+    director_mode: DirectorMode = DirectorMode.STATIC,
+    studio_config: StudioConfig | None = None,
+    roles_dir: Path | None = None,
+    role_runner: RoleRunner = run_role,
+    role_timeout_seconds: int = 600,
+) -> PilotCycleResult:
+    state_dir.mkdir(parents=True, exist_ok=True)
+    studio_config = studio_config or StudioConfig()
+    roles_dir = roles_dir or repo_root / "studio" / "roles"
+
+    director_output = _run_director(
+        repo_root,
+        objective=objective,
+        spec=spec,
+        cycle_number=cycle_number,
+        state_dir=state_dir,
+        director_mode=director_mode,
+        studio_config=studio_config,
+        roles_dir=roles_dir,
+        role_runner=role_runner,
+        role_timeout_seconds=role_timeout_seconds,
+    )
+    selected_objective = _objective_from_director_output(director_output)
+    builder_output = _run_builder(
+        repo_root,
+        selected_objective,
+        director_output,
+        director_mode=director_mode,
+        studio_config=studio_config,
+        roles_dir=roles_dir,
+        role_runner=role_runner,
+        role_timeout_seconds=role_timeout_seconds,
+    )
+    builder_path = state_dir / f"cycle-{cycle_number:04d}-builder.md"
+    builder_path.write_text(builder_output.rstrip() + "\n", encoding="utf-8")
+
+    pilot_spec = "\n".join(
+        [
+            "Phase 1 pilot: no repository writes are applied by the orchestrator yet.",
+            spec,
+            "",
+            "Builder proposal:",
+            builder_output.strip(),
+        ]
+    )
+    request = build_evaluation_request(repo_root, objective=selected_objective, spec=pilot_spec)
+    request_path = state_dir / f"cycle-{cycle_number:04d}-request.json"
+    report_path = state_dir / f"cycle-{cycle_number:04d}-report.json"
+    report = EvaluationClient(evaluation_target).evaluate(repo_root, request, state_dir, cycle_number)
+
+    return PilotCycleResult(
+        director_path=state_dir / f"cycle-{cycle_number:04d}-director.md",
+        builder_path=builder_path,
+        request_path=request_path,
+        report_path=report_path,
+        blocked=report.blocks_merge(),
+        blocking_reasons=report.blocking_reasons(),
     )
 
 
@@ -69,14 +147,18 @@ def run_dry_cycle(
     studio_config = studio_config or StudioConfig()
     roles_dir = roles_dir or repo_root / "studio" / "roles"
     if director_mode == DirectorMode.MODEL:
-        director_output = role_runner(
-            studio_config,
-            roles_dir,
-            "director",
-            _director_context(repo_root, objective=objective, spec=spec),
-            timeout_seconds=role_timeout_seconds,
+        director_output = _run_director(
+            repo_root,
+            objective=objective,
+            spec=spec,
+            cycle_number=cycle_number,
+            state_dir=state_dir,
+            director_mode=director_mode,
+            studio_config=studio_config,
+            roles_dir=roles_dir,
+            role_runner=role_runner,
+            role_timeout_seconds=role_timeout_seconds,
         )
-        (state_dir / f"cycle-{cycle_number:04d}-director.md").write_text(director_output.rstrip() + "\n", encoding="utf-8")
         objective = _objective_from_director_output(director_output)
 
     request = build_evaluation_request(repo_root, objective=objective, spec=spec)
@@ -111,14 +193,27 @@ def main(argv: Sequence[str] | None = None) -> int:
     evaluation_target = EvaluationTarget(args.evaluation_target)
     director_mode = DirectorMode(args.director_mode)
 
-    if not args.dry_run:
-        print("Full autonomous loop is not enabled yet. Re-run with --dry-run for the current safe Phase 0 path.")
-        return 2
-
     cycles = max(1, args.max_cycles)
-    last_result: DryCycleResult | None = None
+    last_blocked = False
     for cycle_number in range(1, cycles + 1):
-        last_result = run_dry_cycle(
+        if (state_dir / "STOP").exists():
+            print(f"STOP file found at {state_dir / 'STOP'}; exiting before cycle {cycle_number}.")
+            break
+        if args.dry_run:
+            dry_result = run_dry_cycle(
+                args.repo_root,
+                state_dir,
+                cycle_number=cycle_number,
+                evaluation_target=evaluation_target,
+                director_mode=director_mode,
+                studio_config=studio_config,
+                role_timeout_seconds=args.role_timeout_seconds,
+            )
+            last_blocked = dry_result.blocked
+            print(f"cycle {cycle_number}: report={dry_result.report_path} blocked={dry_result.blocked}")
+            continue
+
+        pilot_result = run_pilot_cycle(
             args.repo_root,
             state_dir,
             cycle_number=cycle_number,
@@ -127,9 +222,13 @@ def main(argv: Sequence[str] | None = None) -> int:
             studio_config=studio_config,
             role_timeout_seconds=args.role_timeout_seconds,
         )
-        print(f"cycle {cycle_number}: report={last_result.report_path} blocked={last_result.blocked}")
+        last_blocked = pilot_result.blocked
+        print(
+            f"cycle {cycle_number}: director={pilot_result.director_path} "
+            f"builder={pilot_result.builder_path} report={pilot_result.report_path} blocked={pilot_result.blocked}"
+        )
 
-    return 1 if last_result and last_result.blocked else 0
+    return 1 if last_blocked else 0
 
 
 def _git_output(repo_root: Path, *args: str) -> str:
@@ -153,6 +252,100 @@ def _director_context(repo_root: Path, *, objective: str, spec: str) -> str:
             "Mode: no-write dry-run. Propose the next small objective only; do not request code changes yet.",
         ]
     )
+
+
+def _run_director(
+    repo_root: Path,
+    *,
+    objective: str,
+    spec: str,
+    cycle_number: int,
+    state_dir: Path,
+    director_mode: DirectorMode,
+    studio_config: StudioConfig,
+    roles_dir: Path,
+    role_runner: RoleRunner,
+    role_timeout_seconds: int,
+) -> str:
+    if director_mode == DirectorMode.STATIC:
+        director_output = f"Objective: {objective}\nReason: {spec}"
+    else:
+        director_output = role_runner(
+            studio_config,
+            roles_dir,
+            "director",
+            _director_context(repo_root, objective=objective, spec=spec),
+            timeout_seconds=role_timeout_seconds,
+        )
+    (state_dir / f"cycle-{cycle_number:04d}-director.md").write_text(director_output.rstrip() + "\n", encoding="utf-8")
+    return director_output
+
+
+def _builder_context(repo_root: Path, objective: str, director_output: str) -> str:
+    file_summary = "\n".join(f"- {path}" for path in _known_repo_files(repo_root))
+    return "\n".join(
+        [
+            f"Selected objective: {objective}",
+            "",
+            "Director output:",
+            director_output.strip(),
+            "",
+            "Mode: Phase 1 pilot. Return an implementation proposal only; do not claim files were changed.",
+            "Do not invent paths. Proposed changed files must be listed below, or explicitly labeled as NEW.",
+            "Do not claim tests were run. You may recommend test commands to run later.",
+            "",
+            "Known existing paths:",
+            file_summary,
+        ]
+    )
+
+
+def _run_builder(
+    repo_root: Path,
+    objective: str,
+    director_output: str,
+    *,
+    director_mode: DirectorMode,
+    studio_config: StudioConfig,
+    roles_dir: Path,
+    role_runner: RoleRunner,
+    role_timeout_seconds: int,
+) -> str:
+    if director_mode == DirectorMode.STATIC:
+        return "\n".join(
+            [
+                "Implementation summary: no-write static pilot proposal.",
+                "Changed files: none.",
+                "Tests: delegated to evaluation client.",
+                f"Objective considered: {objective}",
+            ]
+        )
+    return role_runner(
+        studio_config,
+        roles_dir,
+        "builder",
+        _builder_context(repo_root, objective, director_output),
+        timeout_seconds=role_timeout_seconds,
+    )
+
+
+def _known_repo_files(repo_root: Path) -> list[str]:
+    patterns = [
+        "game/src/**/*.ts",
+        "game/tests/**/*.ts",
+        "game/smoke/**/*.ts",
+        "eval_lab/**/*.py",
+        "studio/**/*.py",
+        "studio/roles/*.md",
+        "*.md",
+        "*.ps1",
+    ]
+    paths: set[str] = set()
+    for pattern in patterns:
+        for path in repo_root.glob(pattern):
+            if path.is_file() and "studio/state" not in path.as_posix():
+                paths.add(path.relative_to(repo_root).as_posix())
+    return sorted(paths)
 
 
 def _objective_from_director_output(output: str) -> str:

@@ -148,15 +148,15 @@ so sparky2 can drive turns, read state snapshots, capture screenshots, and compa
 Everything else (procgen, items, biomes, meta-progression, art) is what the studio *builds*.
 
 ## 10. Phase 0 checklist (human, once)
-- [ ] Create `github.com/malicorx/ai_roguelike` + add the boxes' deploy key / confirm push rights.
-- [ ] Provision `~/ai_roguelike` on sparky1 as the developer-studio checkout.
-- [ ] Provision `~/ai_roguelike` on sparky2 as the evaluation-lab checkout.
-- [ ] Provision `/opt/ai_roguelike` on theebie as the deploy/runtime directory.
-- [ ] Scaffold `game/` (TypeScript + canvas), the v0 playable, `tests/` (unit), browser smoke, `ci.yml`.
+- [x] Create `github.com/malicorx/ai_roguelike` + add the boxes' deploy key / confirm push rights.
+- [x] Provision `~/ai_roguelike` on sparky1 as the developer-studio checkout.
+- [x] Provision `~/ai_roguelike` on sparky2 as the evaluation-lab checkout.
+- [x] Provision `/opt/ai_roguelike` on theebie as the deploy/runtime directory.
+- [x] Scaffold `game/` (TypeScript + canvas), the v0 playable, `tests/` (unit), browser smoke, `ci.yml`.
 - [ ] Add `VISUAL_STYLE.md` and deterministic screenshot scenarios.
-- [ ] Wire the theebie serving path + `roguelike-smoke`.
-- [ ] Land `studio/` — `orchestrator.py`, `role_runner.py`, the `roles/*.md`, checkpoint/STOP.
-- [ ] Land `eval_lab/` — candidate request schema, sparky2 runner, QA/design report schema.
-- [ ] Land `develop.ps1`.
-- [ ] Dry-run: `develop.ps1 --time 30m --max-cycles 1` → confirm one full cycle merges + deploys + rolls back cleanly on an injected failure.
+- [x] Wire the theebie serving path + `roguelike-smoke`.
+- [x] Land `studio/` — `orchestrator.py`, `role_runner.py`, the `roles/*.md`, checkpoint/STOP.
+- [x] Land `eval_lab/` — candidate request schema, sparky2 runner, QA/design report schema.
+- [x] Land `develop.ps1`.
+- [ ] Dry-run: `develop.ps1 --time 30m --max-cycles 1` → confirm one safe no-write evaluation cycle records request/report artifacts.
 - [ ] Hand off: `develop.ps1 --time 100h`.

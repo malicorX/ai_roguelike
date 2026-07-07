@@ -1,0 +1,2 @@
+{"id":"phase0-visual-baselines","priority":1,"title":"Add deterministic screenshot baselines","status":"backlog","notes":"Use Playwright screenshots and VISUAL_STYLE.md to start visual regression checks."}
+{"id":"phase0-first-agent-cycle","priority":2,"title":"Run one no-write director/reviewer/player cycle","status":"backlog","notes":"Exercise role prompts against Agents-A1 without allowing repository writes."}

@@ -1,0 +1,43 @@
+from __future__ import annotations
+
+from dataclasses import dataclass, field
+
+DEFAULT_MODEL = "hf.co/InternScience/Agents-A1-Q4_K_M-GGUF:latest"
+SPARKY1_OLLAMA_BASE_URL = "http://127.0.0.1:11434"
+SPARKY2_OLLAMA_BASE_URL = "http://sparky2:11435"
+
+EVALUATION_ROLES = frozenset({"art_director", "player", "tester", "visual_qa"})
+
+
+@dataclass(frozen=True)
+class StudioConfig:
+    model_assignments: dict[str, str] = field(default_factory=dict)
+    developer_base_url: str = SPARKY1_OLLAMA_BASE_URL
+    evaluator_base_url: str = SPARKY2_OLLAMA_BASE_URL
+
+    @classmethod
+    def from_model_string(cls, models: str) -> StudioConfig:
+        return cls(model_assignments=parse_model_assignments(models))
+
+    def model_for(self, role: str) -> str:
+        return self.model_assignments.get(role, DEFAULT_MODEL)
+
+    def ollama_base_url_for(self, role: str) -> str:
+        if role in EVALUATION_ROLES:
+            return self.evaluator_base_url
+        return self.developer_base_url
+
+
+def parse_model_assignments(raw: str) -> dict[str, str]:
+    if not raw.strip():
+        return {}
+
+    assignments: dict[str, str] = {}
+    for entry in raw.split(","):
+        if "=" not in entry:
+            raise ValueError(f"Malformed model assignment: {entry!r}")
+        role, model = (part.strip() for part in entry.split("=", 1))
+        if not role or not model:
+            raise ValueError(f"Malformed model assignment: {entry!r}")
+        assignments[role] = model
+    return assignments

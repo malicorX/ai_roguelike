@@ -13,3 +13,5 @@ __pycache__/
 *.log
 eval_lab/reports/*.json
 !eval_lab/reports/.gitkeep
+studio/state/*
+!studio/state/.gitkeep

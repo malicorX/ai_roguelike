@@ -55,3 +55,6 @@ jobs:
 
       - name: Run eval lab tests
         run: python -m unittest discover -s eval_lab/tests
+
+      - name: Run studio tests
+        run: python -m unittest discover -s studio/tests

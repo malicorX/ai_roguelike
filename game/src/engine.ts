@@ -14,6 +14,7 @@ export type GameMap = {
   tiles: Tile[][];
 };
 
+export type DiagnosticsLog = string[];
 export type GameState = {
   seed: number;
   turn: number;
@@ -21,6 +22,7 @@ export type GameState = {
   player: Actor;
   enemies: Actor[];
   log: string[];
+  diagnostics: DiagnosticsLog;
 };
 
 export type MoveAction = {
@@ -39,6 +41,7 @@ export function createGame({ seed }: { seed: number }): GameState {
     player: { id: "player", x: 2, y: 2, hp: 10, attack: 3 },
     enemies: [{ id: "enemy-1", x: 7, y: 4, hp: 6, attack: 2 }],
     log: ["You enter the dungeon."],
+    diagnostics: [],
   };
 }
 
@@ -46,6 +49,10 @@ export function stepGame(game: GameState, action: GameAction): GameState {
   return movePlayer(game, action);
 }
 
+function logTurnDiagnostics(game: GameState): void {
+  const diag = `Turn ${game.turn}: Player HP=${game.player.hp}, Pos=(${game.player.x},${game.player.y}), Enemies=${game.enemies.length}`;
+  game.diagnostics.push(diag);
+}
 function createRoomMap(width: number, height: number): GameMap {
   return {
     width,

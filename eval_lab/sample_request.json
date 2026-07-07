@@ -1,0 +1,9 @@
+{
+  "branch": "main",
+  "commit": "local",
+  "objective": "Verify the current v0 playable build.",
+  "spec": "Run deterministic automated checks and return a QA/design report.",
+  "changed_files": [],
+  "seeds": [1, 7, 42],
+  "focus": ["qa", "visual-readability", "basic-fun"]
+}

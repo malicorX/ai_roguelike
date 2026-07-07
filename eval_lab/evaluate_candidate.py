@@ -31,6 +31,7 @@ def evaluate_candidate(repo_root: Path, request: EvaluationRequest) -> Evaluatio
     )
     design = DesignReport(
         verdict="BACKLOG",
+        visual_notes=["Automated canvas readability smoke passed."] if not bugs else [],
         backlog_suggestions=[
             "Add screenshot comparison and longer playthrough scenarios once visual baselines exist.",
         ],

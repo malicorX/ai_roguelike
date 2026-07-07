@@ -153,7 +153,8 @@ Everything else (procgen, items, biomes, meta-progression, art) is what the stud
 - [x] Provision `~/ai_roguelike` on sparky2 as the evaluation-lab checkout.
 - [x] Provision `/opt/ai_roguelike` on theebie as the deploy/runtime directory.
 - [x] Scaffold `game/` (TypeScript + canvas), the v0 playable, `tests/` (unit), browser smoke, `ci.yml`.
-- [ ] Add `VISUAL_STYLE.md` and deterministic screenshot scenarios.
+- [x] Add `VISUAL_STYLE.md` and deterministic canvas visual smoke.
+- [ ] Add full screenshot baselines for visual regression review.
 - [x] Wire the theebie serving path + `roguelike-smoke`.
 - [x] Land `studio/` — `orchestrator.py`, `role_runner.py`, the `roles/*.md`, checkpoint/STOP.
 - [x] Land `eval_lab/` — candidate request schema, sparky2 runner, QA/design report schema.

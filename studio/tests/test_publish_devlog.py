@@ -57,6 +57,61 @@ class PublishDevlogTest(unittest.TestCase):
             self.assertIn("sparky2", docs_html)
             self.assertIn("Readable grid.", visual_html)
 
+    def test_load_cycle_marks_missing_report_as_blocked(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            state_dir = Path(tmpdir)
+            self._write_cycle(
+                state_dir,
+                3,
+                director="Objective: Finish evaluation.",
+                builder="builder",
+                proposal_lint={"verdict": "PASS", "issues": []},
+                request={"branch": "main", "commit": "abc1234", "objective": "Finish evaluation."},
+                report=None,
+            )
+
+            cycles = load_cycles(state_dir)
+
+        self.assertTrue(cycles[0].blocked)
+        self.assertIn("Evaluation report missing.", cycles[0].blocking_reasons)
+
+    def test_publish_site_renders_write_cycle_apply_and_merge_artifacts(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            repo = Path(tmpdir)
+            state_dir = repo / "studio" / "state"
+            out_dir = repo / "site"
+            (repo / "VISUAL_STYLE.md").write_text("# Visual Style\n", encoding="utf-8")
+            self._write_cycle(
+                state_dir,
+                4,
+                director="Objective: Update render label.",
+                builder="Applied diff.",
+                proposal_lint={"verdict": "PASS", "issues": []},
+                request={
+                    "branch": "cycle-0004-update-render-label",
+                    "commit": "deadbeef",
+                    "objective": "Update render label.",
+                    "spec": "Phase 1 write cycle: repository changes were applied on a feature branch before evaluation.",
+                },
+                report={"qa": {"verdict": "PASS"}, "design": {"verdict": "BACKLOG"}},
+            )
+            (state_dir / "cycle-0004-apply.json").write_text(
+                json.dumps({"branch": "cycle-0004-update-render-label", "commit": "deadbeef", "verdict": "APPLIED"})
+                + "\n",
+                encoding="utf-8",
+            )
+            (state_dir / "cycle-0004-merge.json").write_text(
+                json.dumps({"branch": "cycle-0004-update-render-label", "commit": "deadbeef", "verdict": "MERGED"})
+                + "\n",
+                encoding="utf-8",
+            )
+
+            publish_site(repo, state_dir, out_dir)
+            cycle_html = (out_dir / "devlog" / "cycle-0004.html").read_text(encoding="utf-8")
+
+        self.assertIn("write", cycle_html.lower())
+        self.assertIn("MERGED", cycle_html)
+
     def _write_cycle(
         self,
         state_dir: Path,
@@ -66,7 +121,7 @@ class PublishDevlogTest(unittest.TestCase):
         builder: str,
         proposal_lint: dict,
         request: dict,
-        report: dict,
+        report: dict | None,
     ) -> None:
         state_dir.mkdir(parents=True, exist_ok=True)
         prefix = f"cycle-{number:04d}"
@@ -74,7 +129,8 @@ class PublishDevlogTest(unittest.TestCase):
         (state_dir / f"{prefix}-builder.md").write_text(builder + "\n", encoding="utf-8")
         (state_dir / f"{prefix}-proposal-lint.json").write_text(json.dumps(proposal_lint, indent=2) + "\n", encoding="utf-8")
         (state_dir / f"{prefix}-request.json").write_text(json.dumps(request, indent=2) + "\n", encoding="utf-8")
-        (state_dir / f"{prefix}-report.json").write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
+        if report is not None:
+            (state_dir / f"{prefix}-report.json").write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
 
 
 if __name__ == "__main__":

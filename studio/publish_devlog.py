@@ -22,8 +22,11 @@ class CycleRecord:
     proposal_lint: dict[str, Any]
     request: dict[str, Any]
     report: dict[str, Any]
+    apply: dict[str, Any]
+    merge: dict[str, Any]
     blocked: bool
     blocking_reasons: list[str]
+    mode: str
 
 
 @dataclass(frozen=True)
@@ -110,28 +113,43 @@ def _load_cycle(state_dir: Path, number: int) -> CycleRecord:
     proposal_lint = _read_json(state_dir / f"{prefix}-proposal-lint.json")
     request = _read_json(state_dir / f"{prefix}-request.json")
     report = _read_json(state_dir / f"{prefix}-report.json")
+    apply = _read_json(state_dir / f"{prefix}-apply.json")
+    merge = _read_json(state_dir / f"{prefix}-merge.json")
     objective = str(request.get("objective") or _objective_from_director(director))
-    blocked, reasons = _cycle_status(proposal_lint, report)
+    mode = "write" if apply or merge or "write cycle" in str(request.get("spec", "")).lower() else "proposal"
+    blocked, reasons = _cycle_status(proposal_lint, report, apply=apply, merge=merge)
     return CycleRecord(
         number=number,
         objective=objective,
-        branch=str(request.get("branch", "unknown")),
-        commit=str(request.get("commit", "unknown")),
+        branch=str(merge.get("branch") or apply.get("branch") or request.get("branch", "unknown")),
+        commit=str(merge.get("commit") or apply.get("commit") or request.get("commit", "unknown")),
         director=director,
         builder=builder,
         proposal_lint=proposal_lint,
         request=request,
         report=report,
+        apply=apply,
+        merge=merge,
         blocked=blocked,
         blocking_reasons=reasons,
+        mode=mode,
     )
 
 
-def _cycle_status(proposal_lint: dict[str, Any], report: dict[str, Any]) -> tuple[bool, list[str]]:
+def _cycle_status(
+    proposal_lint: dict[str, Any],
+    report: dict[str, Any],
+    *,
+    apply: dict[str, Any] | None = None,
+    merge: dict[str, Any] | None = None,
+) -> tuple[bool, list[str]]:
     reasons: list[str] = []
     if proposal_lint.get("verdict") == "REWORK":
         reasons.append("Builder proposal lint failed.")
         reasons.extend(str(issue) for issue in proposal_lint.get("issues", []))
+    if not report:
+        reasons.append("Evaluation report missing.")
+        return True, reasons
     qa = report.get("qa", {})
     design = report.get("design", {})
     if qa.get("verdict") == "REWORK":
@@ -139,12 +157,22 @@ def _cycle_status(proposal_lint: dict[str, Any], report: dict[str, Any]) -> tupl
         reasons.extend(str(bug) for bug in qa.get("bugs", []))
     if design.get("verdict") == "BLOCK":
         reasons.append("Design report blocked the cycle.")
+    if apply and apply.get("verdict") == "APPLIED" and not merge and not reasons:
+        reasons.append("Write cycle applied but not merged.")
     return bool(reasons), reasons
 
 
 def _copy_cycle_artifacts(state_dir: Path, artifacts_dir: Path, number: int) -> None:
     prefix = f"cycle-{number:04d}"
-    for suffix in ("director.md", "builder.md", "proposal-lint.json", "request.json", "report.json"):
+    for suffix in (
+        "director.md",
+        "builder.md",
+        "proposal-lint.json",
+        "request.json",
+        "report.json",
+        "apply.json",
+        "merge.json",
+    ):
         source = state_dir / f"{prefix}-{suffix}"
         if source.is_file():
             shutil.copy2(source, artifacts_dir / f"{prefix}-{suffix}")
@@ -158,11 +186,12 @@ def _render_devlog_index(cycles: list[CycleRecord]) -> str:
             "<tr>"
             f"<td><a href=\"./cycle-{cycle.number:04d}.html\">Cycle {cycle.number}</a></td>"
             f"<td><span class=\"status {status}\">{status}</span></td>"
+            f"<td>{_esc(cycle.mode)}</td>"
             f"<td>{_esc(cycle.objective)}</td>"
             f"<td><code>{_esc(cycle.branch)}@{_esc(cycle.commit)}</code></td>"
             "</tr>"
         )
-    body = "\n".join(rows) if rows else "<tr><td colspan=\"4\">No studio cycles recorded yet.</td></tr>"
+    body = "\n".join(rows) if rows else "<tr><td colspan=\"5\">No studio cycles recorded yet.</td></tr>"
     return _page_shell(
         title="ai_roguelike devlog",
         active_nav="devlog",
@@ -173,7 +202,7 @@ def _render_devlog_index(cycles: list[CycleRecord]) -> str:
   <h2>Latest cycles</h2>
   <table>
     <thead>
-      <tr><th>Cycle</th><th>Status</th><th>Objective</th><th>Git</th></tr>
+      <tr><th>Cycle</th><th>Status</th><th>Mode</th><th>Objective</th><th>Git</th></tr>
     </thead>
     <tbody>
       {body}
@@ -199,12 +228,28 @@ def _render_cycle_page(cycle: CycleRecord) -> str:
     lint_issues = cycle.proposal_lint.get("issues", [])
     qa = cycle.report.get("qa", {})
     design = cycle.report.get("design", {})
+    apply = cycle.apply
+    merge = cycle.merge
+    write_section = ""
+    if apply or merge:
+        write_section = f"""
+<section class="panel">
+  <h3>sparky1 · Write cycle</h3>
+  <p>Mode: <strong>{_esc(cycle.mode)}</strong></p>
+  {"<p>Apply verdict: <strong>" + _esc(str(apply.get("verdict", "n/a"))) + "</strong></p>" if apply else ""}
+  {"<p>Merge verdict: <strong>" + _esc(str(merge.get("verdict", "n/a"))) + "</strong></p>" if merge else ""}
+  {"<pre>" + _esc(json.dumps(apply, indent=2)) + "</pre>" if apply else ""}
+  {"<pre>" + _esc(json.dumps(merge, indent=2)) + "</pre>" if merge else ""}
+  {"<p><a href=\"./artifacts/cycle-" + f"{cycle.number:04d}" + "-apply.json\">apply artifact</a></p>" if apply else ""}
+  {"<p><a href=\"./artifacts/cycle-" + f"{cycle.number:04d}" + "-merge.json\">merge artifact</a></p>" if merge else ""}
+</section>
+"""
     body = f"""
 <section class="panel hero">
   <p><a href="./index.html">← Back to devlog</a></p>
   <h2>Cycle {cycle.number}</h2>
   <p class="lede">{_esc(cycle.objective)}</p>
-  <p><span class="status {status}">{status}</span> <code>{_esc(cycle.branch)}@{_esc(cycle.commit)}</code></p>
+  <p><span class="status {status}">{status}</span> <code>{_esc(cycle.branch)}@{_esc(cycle.commit)}</code> · {_esc(cycle.mode)}</p>
   {"<ul>" + "".join(f"<li>{_esc(reason)}</li>" for reason in cycle.blocking_reasons) + "</ul>" if cycle.blocking_reasons else ""}
 </section>
 <section class="grid two">
@@ -238,6 +283,7 @@ def _render_cycle_page(cycle: CycleRecord) -> str:
   <pre>{_esc(json.dumps(cycle.report, indent=2))}</pre>
   <p><a href="./artifacts/cycle-{cycle.number:04d}-report.json">raw artifact</a></p>
 </section>
+{write_section}
 """
     return _page_shell(
         title=f"Cycle {cycle.number} · ai_roguelike devlog",
@@ -286,7 +332,7 @@ def _render_studio_page() -> str:
 <section class="panel">
   <h2>Hosts</h2>
   <ul>
-    <li><strong>sparky1</strong> — developer studio. Director and Builder run here. Repo writes will happen here once the pilot graduates.</li>
+    <li><strong>sparky1</strong> — developer studio. Director and Builder run here. Write mode applies diffs on feature branches and merges on green evaluation.</li>
     <li><strong>sparky2</strong> — evaluation lab. Runs unit/build/smoke/visual gates and returns structured QA/design reports.</li>
     <li><strong>theebie.de</strong> — public runtime for the playable build, docs, and devlog.</li>
   </ul>
@@ -302,7 +348,7 @@ def _render_studio_page() -> str:
 </section>
 <section class="panel">
   <h2>Current phase</h2>
-  <p>Phase 1 pilot: Director and Builder produce artifacts, proposal lint guards quality, sparky2 evaluates, but the orchestrator does not apply code writes yet.</p>
+  <p>Phase 1: proposal-only pilot by default. Optional write mode applies Builder diffs, evaluates candidate branches on sparky2, and merges to main on green.</p>
 </section>
 """,
     )

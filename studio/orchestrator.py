@@ -692,6 +692,8 @@ def _lint_builder_proposal(repo_root: Path, builder_output: str) -> list[str]:
                 continue
             if not _looks_like_repo_path(proposed_path):
                 continue
+            if proposed_path.endswith("/"):
+                continue
             if "new" in lower:
                 continue
             if not (repo_root / proposed_path).is_file():

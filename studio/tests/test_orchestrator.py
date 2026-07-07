@@ -538,6 +538,45 @@ class OrchestratorTest(unittest.TestCase):
         self.assertIn("Write cycle blocked before evaluation.", result.blocking_reasons)
         self.assertEqual(report_data["qa"]["verdict"], "REWORK")
 
+    def test_builder_role_timeout_writes_blocked_report(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            repo = Path(tmpdir)
+            state_dir = repo / "studio" / "state"
+            roles_dir = repo / "studio" / "roles"
+            game = repo / "game"
+            game.mkdir(parents=True)
+            self._write_success_npm(game)
+            roles_dir.mkdir(parents=True)
+            self._init_git_repo(repo)
+
+            def fake_role_runner(*args: object, **_kwargs: object) -> str:
+                role = args[2]
+                if role == "director":
+                    return "Objective: Add movement bounds test."
+                if role == "builder":
+                    raise TimeoutError("timed out")
+                raise AssertionError(f"Unexpected role: {role}")
+
+            with patch("studio.orchestrator._git_output") as git_output:
+                git_output.side_effect = ["main", "abc1234", "main", "abc1234"]
+                result = run_pilot_cycle(
+                    repo,
+                    state_dir,
+                    cycle_number=10,
+                    evaluation_target=EvaluationTarget.LOCAL,
+                    director_mode=DirectorMode.MODEL,
+                    studio_config=StudioConfig.from_model_string("director=test-model,builder=test-model"),
+                    roles_dir=roles_dir,
+                    role_runner=fake_role_runner,
+                    apply_writes=True,
+                )
+
+            report_data = json.loads(result.report_path.read_text(encoding="utf-8"))
+
+        self.assertTrue(result.blocked)
+        self.assertIn("Builder role failed.", result.blocking_reasons)
+        self.assertEqual(report_data["qa"]["checks"], ["builder role"])
+
     def test_write_cycle_applies_diff_merges_on_green_evaluation(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             repo = Path(tmpdir)

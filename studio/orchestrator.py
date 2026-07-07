@@ -97,32 +97,71 @@ def run_pilot_cycle(
     state_dir.mkdir(parents=True, exist_ok=True)
     studio_config = studio_config or StudioConfig()
     roles_dir = roles_dir or repo_root / "studio" / "roles"
-
-    director_output = _run_director(
-        repo_root,
-        objective=objective,
-        spec=spec,
-        cycle_number=cycle_number,
-        state_dir=state_dir,
-        director_mode=director_mode,
-        studio_config=studio_config,
-        roles_dir=roles_dir,
-        role_runner=role_runner,
-        role_timeout_seconds=role_timeout_seconds,
-    )
-    selected_objective = _objective_from_director_output(director_output)
-    builder_output = _run_builder(
-        repo_root,
-        selected_objective,
-        director_output,
-        director_mode=director_mode,
-        studio_config=studio_config,
-        roles_dir=roles_dir,
-        role_runner=role_runner,
-        role_timeout_seconds=role_timeout_seconds,
-        apply_writes=apply_writes,
-    )
+    director_path = state_dir / f"cycle-{cycle_number:04d}-director.md"
     builder_path = state_dir / f"cycle-{cycle_number:04d}-builder.md"
+    request_path = state_dir / f"cycle-{cycle_number:04d}-request.json"
+    report_path = state_dir / f"cycle-{cycle_number:04d}-report.json"
+    proposal_lint_path = state_dir / f"cycle-{cycle_number:04d}-proposal-lint.json"
+
+    try:
+        director_output = _run_director(
+            repo_root,
+            objective=objective,
+            spec=spec,
+            cycle_number=cycle_number,
+            state_dir=state_dir,
+            director_mode=director_mode,
+            studio_config=studio_config,
+            roles_dir=roles_dir,
+            role_runner=role_runner,
+            role_timeout_seconds=role_timeout_seconds,
+        )
+    except (TimeoutError, OSError, RuntimeError, ValueError) as exc:
+        return _blocked_role_failure_result(
+            repo_root,
+            state_dir,
+            cycle_number=cycle_number,
+            objective=objective,
+            spec=spec,
+            role="director",
+            error=str(exc),
+            director_path=director_path,
+            builder_path=builder_path,
+            proposal_lint_path=proposal_lint_path,
+            request_path=request_path,
+            report_path=report_path,
+            apply_writes=apply_writes,
+        )
+
+    selected_objective = _objective_from_director_output(director_output)
+    try:
+        builder_output = _run_builder(
+            repo_root,
+            selected_objective,
+            director_output,
+            director_mode=director_mode,
+            studio_config=studio_config,
+            roles_dir=roles_dir,
+            role_runner=role_runner,
+            role_timeout_seconds=role_timeout_seconds,
+            apply_writes=apply_writes,
+        )
+    except (TimeoutError, OSError, RuntimeError, ValueError) as exc:
+        return _blocked_role_failure_result(
+            repo_root,
+            state_dir,
+            cycle_number=cycle_number,
+            objective=selected_objective,
+            spec=spec,
+            role="builder",
+            error=str(exc),
+            director_path=director_path,
+            builder_path=builder_path,
+            proposal_lint_path=proposal_lint_path,
+            request_path=request_path,
+            report_path=report_path,
+            apply_writes=apply_writes,
+        )
     builder_path.write_text(builder_output.rstrip() + "\n", encoding="utf-8")
 
     pilot_spec = "\n".join(
@@ -136,9 +175,6 @@ def run_pilot_cycle(
             builder_output.strip(),
         ]
     )
-    request_path = state_dir / f"cycle-{cycle_number:04d}-request.json"
-    report_path = state_dir / f"cycle-{cycle_number:04d}-report.json"
-    proposal_lint_path = state_dir / f"cycle-{cycle_number:04d}-proposal-lint.json"
     proposal_issues = _lint_builder_proposal(repo_root, builder_output)
     proposal_lint_path.write_text(
         json.dumps(
@@ -536,6 +572,65 @@ def _blocked_write_result(
         report_path=report_path,
         blocked=True,
         blocking_reasons=["Write cycle blocked before evaluation.", *reasons],
+    )
+
+
+def _blocked_role_failure_result(
+    repo_root: Path,
+    state_dir: Path,
+    *,
+    cycle_number: int,
+    objective: str,
+    spec: str,
+    role: str,
+    error: str,
+    director_path: Path,
+    builder_path: Path,
+    proposal_lint_path: Path,
+    request_path: Path,
+    report_path: Path,
+    apply_writes: bool,
+) -> PilotCycleResult:
+    if not builder_path.is_file():
+        builder_path.write_text(f"{role.title()} role failed before producing output.\n", encoding="utf-8")
+    proposal_lint_path.write_text(
+        json.dumps({"verdict": "REWORK", "issues": [f"{role} role failed: {error}"]}, indent=2) + "\n",
+        encoding="utf-8",
+    )
+    mode_line = (
+        "Phase 1 write cycle: repository writes were not attempted because a studio role failed."
+        if apply_writes
+        else "Phase 1 pilot: repository writes are disabled and a studio role failed."
+    )
+    request = build_evaluation_request(
+        repo_root,
+        objective=objective,
+        spec="\n".join([mode_line, spec]),
+    )
+    request_path.write_text(json.dumps(request.to_dict(), indent=2) + "\n", encoding="utf-8")
+    report = EvaluationReport(
+        request_branch=request.branch,
+        request_commit=request.commit,
+        qa=QaReport(
+            verdict="REWORK",
+            checks=[f"{role} role"],
+            bugs=[error],
+            repro_steps=[f"Retry the cycle after the {role} model endpoint responds within the role timeout."],
+        ),
+        design=DesignReport(
+            verdict="BACKLOG",
+            backlog_suggestions=["Keep studio role calls within the configured timeout or increase --role-timeout-seconds."],
+        ),
+    )
+    report_path.write_text(json.dumps(report.to_dict(), indent=2) + "\n", encoding="utf-8")
+    return PilotCycleResult(
+        director_path=director_path,
+        builder_path=builder_path,
+        proposal_lint_path=proposal_lint_path,
+        request_path=request_path,
+        report_path=report_path,
+        blocked=True,
+        blocking_reasons=[f"{role.title()} role failed.", error],
     )
 
 

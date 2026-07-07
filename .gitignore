@@ -1,6 +1,10 @@
 node_modules/
 dist/
 coverage/
+playwright-report/
+test-results/
+game/playwright-report/
+game/test-results/
 __pycache__/
 *.py[cod]
 .env

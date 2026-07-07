@@ -1,5 +1,15 @@
 import { createGame, stepGame, type GameAction, type GameState } from "./engine";
 import { toGlyphGrid } from "./render";
+import { snapshotGame, type HarnessSnapshot } from "./testHarness";
+
+declare global {
+  interface Window {
+    __AI_ROGUELIKE_TEST__?: {
+      act(action: GameAction): HarnessSnapshot;
+      snapshot(): HarnessSnapshot;
+    };
+  }
+}
 
 const TILE_SIZE = 48;
 const COLORS = {
@@ -16,6 +26,16 @@ const status = requireElement(document.querySelector<HTMLParagraphElement>("#sta
 const context = requireCanvasContext(canvas);
 
 let game = createGame({ seed: 1 });
+window.__AI_ROGUELIKE_TEST__ = {
+  act(action: GameAction): HarnessSnapshot {
+    game = stepGame(game, action);
+    render(game);
+    return snapshotGame(game);
+  },
+  snapshot(): HarnessSnapshot {
+    return snapshotGame(game);
+  },
+};
 render(game);
 
 window.addEventListener("keydown", (event) => {

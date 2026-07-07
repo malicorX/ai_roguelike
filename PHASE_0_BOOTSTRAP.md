@@ -13,9 +13,10 @@
 ```
 ai_roguelike/
   game/                 # the browser game (TypeScript + HTML5 canvas; rot.js for FOV/RNG/path)
-    src/                #   engine, map gen, entities, render, input, test harness
+    src/                #   engine, map gen, entities, render, input, browser test harness
     index.html
-    tests/              #   unit tests (vitest) + headless playthrough + screenshot smoke
+    tests/              #   unit tests (vitest)
+    smoke/              #   Playwright browser boot/playability smoke
   studio/               # the autonomous dev loop (Python, runs on sparky1)
     orchestrator.py     #   the cycle loop
     role_runner.py      #   one role invocation = one model call + tools
@@ -127,7 +128,7 @@ the feedback actionable for sparky1.
 
 ## 7. Gates (what "done" means each cycle)
 - **Review gate:** ≥1 reviewer PASS, and the reviewer is never the builder (no self-approval).
-- **Test gate:** unit suite green (vitest) + a headless playthrough smoke that drives the game N turns.
+- **Test gate:** unit suite green (vitest) + a Playwright smoke that boots the browser build and drives the exposed test harness.
 - **Evaluation gate:** sparky2 QA report PASS; visual/design report has no blocking readability or
   style-guide violations.
 - **Deploy gate:** `main` green → build → deploy to theebie → post-deploy smoke (page loads, game
@@ -136,7 +137,7 @@ the feedback actionable for sparky1.
   game (is it up + playable?); red → pause + log.
 
 ## 8. CI + deploy (Phase 0 wiring)
-- `ci.yml`: install → `npm test` (unit + smoke build) on push/PR to `main`. This is the **merge gate**.
+- `ci.yml`: install → browser install → `npm test` → `npm run typecheck` → `npm run build` → `npm run smoke` on push/PR to `main`. This is the **merge gate**.
 - Deploy: a `deploy/` script the **Deployer** role runs from sparky1 → theebie (static build served
   under theebie; add the route to the public whitelist per HOWTO §6/§8). Post-deploy `roguelike-smoke`.
 
@@ -151,7 +152,7 @@ Everything else (procgen, items, biomes, meta-progression, art) is what the stud
 - [ ] Provision `~/ai_roguelike` on sparky1 as the developer-studio checkout.
 - [ ] Provision `~/ai_roguelike` on sparky2 as the evaluation-lab checkout.
 - [ ] Provision `/opt/ai_roguelike` on theebie as the deploy/runtime directory.
-- [ ] Scaffold `game/` (TypeScript + canvas), the v0 playable, `tests/` (unit + smoke + screenshot), `ci.yml`.
+- [ ] Scaffold `game/` (TypeScript + canvas), the v0 playable, `tests/` (unit), browser smoke, `ci.yml`.
 - [ ] Add `VISUAL_STYLE.md` and deterministic screenshot scenarios.
 - [ ] Wire the theebie serving path + `roguelike-smoke`.
 - [ ] Land `studio/` — `orchestrator.py`, `role_runner.py`, the `roles/*.md`, checkpoint/STOP.

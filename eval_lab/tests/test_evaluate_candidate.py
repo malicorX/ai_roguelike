@@ -30,6 +30,7 @@ class EvaluateCandidateTest(unittest.TestCase):
         self.assertEqual(report.request_branch, "cycle-1")
         self.assertEqual(report.request_commit, "abc1234")
         self.assertEqual(report.qa.verdict, "PASS")
+        self.assertEqual(report.qa.checks, ["npm test", "npm run build", "npm run smoke"])
         self.assertEqual(report.design.verdict, "BACKLOG")
         self.assertFalse(report.blocks_merge())
 

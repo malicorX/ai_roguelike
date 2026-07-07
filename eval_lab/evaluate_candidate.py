@@ -13,7 +13,7 @@ from eval_lab.protocol import DesignReport, EvaluationReport, EvaluationRequest,
 
 def evaluate_candidate(repo_root: Path, request: EvaluationRequest) -> EvaluationReport:
     game_dir = repo_root / "game"
-    checks = ["npm test", "npm run build"]
+    checks = ["npm test", "npm run build", "npm run smoke"]
     bugs: list[str] = []
     repro_steps: list[str] = []
 
@@ -32,7 +32,7 @@ def evaluate_candidate(repo_root: Path, request: EvaluationRequest) -> Evaluatio
     design = DesignReport(
         verdict="BACKLOG",
         backlog_suggestions=[
-            "Run browser playthrough and screenshot review once Playwright scenarios exist.",
+            "Add screenshot comparison and longer playthrough scenarios once visual baselines exist.",
         ],
     )
 

@@ -327,6 +327,7 @@ def _run_director(
 
 def _builder_context(repo_root: Path, objective: str, director_output: str) -> str:
     file_summary = "\n".join(f"- {path}" for path in _known_repo_files(repo_root))
+    command_summary = "\n".join(f"- {command}" for command in _known_test_commands(repo_root))
     return "\n".join(
         [
             f"Selected objective: {objective}",
@@ -340,6 +341,9 @@ def _builder_context(repo_root: Path, objective: str, director_output: str) -> s
             "",
             "Known existing paths:",
             file_summary,
+            "",
+            "Known test commands:",
+            command_summary,
         ]
     )
 
@@ -394,20 +398,121 @@ def _known_repo_files(repo_root: Path) -> list[str]:
 
 def _lint_builder_proposal(repo_root: Path, builder_output: str) -> list[str]:
     issues: list[str] = []
+    seen_issues: set[str] = set()
+    npm_scripts = _known_npm_scripts(repo_root)
     for line in builder_output.splitlines():
         normalized = line.strip()
         lower = normalized.lower()
         if "test commands run" in lower or "tests run" in lower:
             if "not run" not in lower and "to run later" not in lower:
-                issues.append("Builder proposal claims tests were run in proposal-only mode.")
+                _append_issue(issues, seen_issues, "Builder proposal claims tests were run in proposal-only mode.")
+        command = _extract_shell_command(normalized)
+        if command:
+            for issue in _lint_shell_command(command, npm_scripts):
+                _append_issue(issues, seen_issues, issue)
         for proposed_path in re.findall(r"`([^`]+)`", normalized):
+            if _is_shell_command(proposed_path):
+                for issue in _lint_shell_command(proposed_path, npm_scripts):
+                    _append_issue(issues, seen_issues, issue)
+                continue
             if not _looks_like_repo_path(proposed_path):
                 continue
             if "new" in lower:
                 continue
             if not (repo_root / proposed_path).is_file():
-                issues.append(f"Builder proposal references a non-existent path: {proposed_path}")
+                _append_issue(issues, seen_issues, f"Builder proposal references a non-existent path: {proposed_path}")
     return issues
+
+
+def _append_issue(issues: list[str], seen_issues: set[str], issue: str) -> None:
+    if issue not in seen_issues:
+        seen_issues.add(issue)
+        issues.append(issue)
+
+
+def _extract_shell_command(line: str) -> str | None:
+    stripped = line.strip()
+    if not stripped or stripped.startswith(("#", "```")):
+        return None
+    stripped = stripped.lstrip("-*").strip()
+    stripped = stripped.strip("`").strip()
+    if _is_shell_command(stripped):
+        return stripped
+    return None
+
+
+def _is_shell_command(value: str) -> bool:
+    return value.startswith(("npm ", "npx ", "python ", "python3 ", "playwright ", "vitest ", "tsc "))
+
+
+def _lint_shell_command(command: str, npm_scripts: set[str]) -> list[str]:
+    tokens = command.split()
+    if not tokens:
+        return []
+    executable = tokens[0]
+    if executable == "npm":
+        return _lint_npm_command(tokens, npm_scripts)
+    if executable == "npx":
+        return _lint_npx_command(tokens)
+    if executable in {"playwright", "vitest", "tsc"}:
+        return []
+    if executable in {"python", "python3"}:
+        if tokens[:3] == [executable, "-m", "unittest"]:
+            return []
+        return [f"Unsupported Python command: {' '.join(tokens[:3])}"]
+    return []
+
+
+def _lint_npm_command(tokens: list[str], npm_scripts: set[str]) -> list[str]:
+    if len(tokens) < 2:
+        return ["Incomplete npm command in Builder proposal."]
+    command = tokens[1]
+    if command == "run":
+        if len(tokens) < 3:
+            return ["Incomplete npm run command in Builder proposal."]
+        script = tokens[2]
+        if script not in npm_scripts:
+            return [f"Unknown npm script in Builder proposal: {script}"]
+        return []
+    if command == "test":
+        if "test" not in npm_scripts:
+            return ["Builder proposal recommends npm test, but game/package.json has no test script."]
+        return []
+    if command in {"ci", "install"}:
+        return []
+    return [f"Unsupported npm command: npm {command}"]
+
+
+def _lint_npx_command(tokens: list[str]) -> list[str]:
+    if len(tokens) < 2:
+        return ["Incomplete npx command in Builder proposal."]
+    tool = tokens[1]
+    if tool in {"playwright", "vitest", "tsc"}:
+        return []
+    return [f"Unsupported npx command: npx {tool}"]
+
+
+def _known_npm_scripts(repo_root: Path) -> set[str]:
+    package_json = repo_root / "game" / "package.json"
+    if not package_json.is_file():
+        return set()
+    data = json.loads(package_json.read_text(encoding="utf-8"))
+    scripts = data.get("scripts", {})
+    if not isinstance(scripts, dict):
+        return set()
+    return {str(name) for name in scripts}
+
+
+def _known_test_commands(repo_root: Path) -> list[str]:
+    scripts = _known_npm_scripts(repo_root)
+    commands: list[str] = []
+    if "test" in scripts:
+        commands.append("npm test")
+    for script in ("typecheck", "build", "smoke"):
+        if script in scripts:
+            commands.append(f"npm run {script}")
+    commands.extend(["python -m unittest discover -s studio/tests", "python -m unittest discover -s eval_lab/tests"])
+    return commands
 
 
 def _looks_like_repo_path(value: str) -> bool:

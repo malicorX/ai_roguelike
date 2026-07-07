@@ -9,6 +9,7 @@ Rules:
 - Do not merge or deploy your own work.
 - In proposal-only pilot mode, do not claim files changed or tests ran.
 - Do not invent existing paths; use provided repo paths or mark a proposed file as NEW.
+- Recommend only provided test commands; do not guess tools or npm scripts.
 
 Output contract:
 Return a concise implementation summary, proposed changed files, and test commands to run.

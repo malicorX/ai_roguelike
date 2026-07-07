@@ -91,6 +91,10 @@ class OrchestratorTest(unittest.TestCase):
             src = game / "src"
             game.mkdir(parents=True)
             src.mkdir()
+            (game / "package.json").write_text(
+                json.dumps({"scripts": {"test": "vitest run", "smoke": "npm run build && playwright test"}}),
+                encoding="utf-8",
+            )
             (src / "main.ts").write_text("export {};\n", encoding="utf-8")
             roles_dir.mkdir(parents=True)
             self._write_success_npm(game)
@@ -130,6 +134,8 @@ class OrchestratorTest(unittest.TestCase):
         self.assertIn("game/src/main.ts", builder_contexts[0])
         self.assertIn("Do not invent paths", builder_contexts[0])
         self.assertIn("Do not claim tests were run", builder_contexts[0])
+        self.assertIn("npm test", builder_contexts[0])
+        self.assertIn("npm run smoke", builder_contexts[0])
 
     def test_pilot_cycle_blocks_invalid_builder_proposal_before_evaluation(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -189,6 +195,7 @@ class OrchestratorTest(unittest.TestCase):
             src = game / "src"
             tests.mkdir(parents=True)
             src.mkdir()
+            (game / "package.json").write_text(json.dumps({"scripts": {"test": "vitest run"}}), encoding="utf-8")
             (tests / "engine.test.ts").write_text("export {};\n", encoding="utf-8")
             (src / "engine.ts").write_text("export {};\n", encoding="utf-8")
             roles_dir.mkdir(parents=True)
@@ -227,6 +234,57 @@ class OrchestratorTest(unittest.TestCase):
 
         self.assertFalse(result.blocked)
         self.assertEqual(lint_data["verdict"], "PASS")
+
+    def test_pilot_cycle_blocks_unknown_test_commands_before_evaluation(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            repo = Path(tmpdir)
+            state_dir = repo / "studio" / "state"
+            roles_dir = repo / "studio" / "roles"
+            game = repo / "game"
+            src = game / "src"
+            src.mkdir(parents=True)
+            (src / "render.ts").write_text("export {};\n", encoding="utf-8")
+            (game / "package.json").write_text(json.dumps({"scripts": {"test": "vitest run", "smoke": "playwright test"}}), encoding="utf-8")
+            roles_dir.mkdir(parents=True)
+            self._write_success_npm(game)
+
+            def fake_role_runner(*args: object, **_kwargs: object) -> str:
+                role = args[2]
+                if role == "director":
+                    return "Objective: Add debug overlay proposal."
+                if role == "builder":
+                    return "\n".join(
+                        [
+                            "Implementation summary: add debug overlay.",
+                            "Proposed changed files:",
+                            "- `game/src/render.ts`",
+                            "Recommended Test Commands:",
+                            "npx jest game/tests/render.test.ts",
+                            "npm run test:smoke --game/smoke/visual-readability.spec.ts",
+                        ]
+                    )
+                raise AssertionError(f"Unexpected role: {role}")
+
+            with patch("studio.orchestrator._git_output") as git_output, patch("studio.orchestrator.EvaluationClient") as evaluation_client:
+                git_output.side_effect = ["main", "abc1234", "main", "abc1234"]
+                result = run_pilot_cycle(
+                    repo,
+                    state_dir,
+                    cycle_number=7,
+                    evaluation_target=EvaluationTarget.LOCAL,
+                    director_mode=DirectorMode.MODEL,
+                    studio_config=StudioConfig.from_model_string("director=test-model,builder=test-model"),
+                    roles_dir=roles_dir,
+                    role_runner=fake_role_runner,
+                )
+
+            lint_data = json.loads(result.proposal_lint_path.read_text(encoding="utf-8"))
+
+        self.assertTrue(result.blocked)
+        self.assertIn("Builder proposal lint failed.", result.blocking_reasons)
+        self.assertIn("Unsupported npx command: npx jest", lint_data["issues"])
+        self.assertIn("Unknown npm script in Builder proposal: test:smoke", lint_data["issues"])
+        evaluation_client.assert_not_called()
 
     def test_static_pilot_cycle_does_not_call_role_runner(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:

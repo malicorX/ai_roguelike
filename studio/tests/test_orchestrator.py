@@ -235,6 +235,61 @@ class OrchestratorTest(unittest.TestCase):
         self.assertFalse(result.blocked)
         self.assertEqual(lint_data["verdict"], "PASS")
 
+    def test_pilot_cycle_allows_markdown_list_backticked_npm_commands(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            repo = Path(tmpdir)
+            state_dir = repo / "studio" / "state"
+            roles_dir = repo / "studio" / "roles"
+            game = repo / "game"
+            smoke = game / "smoke"
+            src = game / "src"
+            smoke.mkdir(parents=True)
+            src.mkdir()
+            (game / "package.json").write_text(
+                json.dumps({"scripts": {"test": "vitest run", "smoke": "playwright test"}}),
+                encoding="utf-8",
+            )
+            (src / "render.ts").write_text("export {};\n", encoding="utf-8")
+            (smoke / "playability.spec.ts").write_text("export {};\n", encoding="utf-8")
+            roles_dir.mkdir(parents=True)
+            self._write_success_npm(game)
+
+            def fake_role_runner(*args: object, **_kwargs: object) -> str:
+                role = args[2]
+                if role == "director":
+                    return "Objective: Improve smoke failure logging."
+                if role == "builder":
+                    return "\n".join(
+                        [
+                            "Implementation summary: add smoke failure logs.",
+                            "Proposed changed files:",
+                            "- `game/smoke/playability.spec.ts`",
+                            "Recommended Test Commands:",
+                            "- `npm run smoke`",
+                            "- `npm test`",
+                        ]
+                    )
+                raise AssertionError(f"Unexpected role: {role}")
+
+            with patch("studio.orchestrator._git_output") as git_output:
+                git_output.side_effect = ["main", "abc1234", "main", "abc1234"]
+                result = run_pilot_cycle(
+                    repo,
+                    state_dir,
+                    cycle_number=8,
+                    evaluation_target=EvaluationTarget.LOCAL,
+                    director_mode=DirectorMode.MODEL,
+                    studio_config=StudioConfig.from_model_string("director=test-model,builder=test-model"),
+                    roles_dir=roles_dir,
+                    role_runner=fake_role_runner,
+                )
+
+            lint_data = json.loads(result.proposal_lint_path.read_text(encoding="utf-8"))
+
+        self.assertFalse(result.blocked)
+        self.assertEqual(lint_data["verdict"], "PASS")
+        self.assertEqual(lint_data["issues"], [])
+
     def test_pilot_cycle_blocks_unknown_test_commands_before_evaluation(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             repo = Path(tmpdir)

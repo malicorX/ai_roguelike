@@ -13,6 +13,7 @@ from typing import Callable, Sequence
 from eval_lab.protocol import DesignReport, EvaluationReport, EvaluationRequest, QaReport
 from studio.config import StudioConfig
 from studio.evaluation_client import EvaluationClient, EvaluationTarget
+from studio.publish_devlog import publish_site
 from studio.role_runner import run_role
 
 DEFAULT_OBJECTIVE = "Verify that the current v0 game remains playable."
@@ -255,6 +256,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             )
             last_blocked = dry_result.blocked
             print(f"cycle {cycle_number}: report={dry_result.report_path} blocked={dry_result.blocked}")
+            _publish_devlog(args.repo_root, state_dir)
             continue
 
         pilot_result = run_pilot_cycle(
@@ -271,8 +273,15 @@ def main(argv: Sequence[str] | None = None) -> int:
             f"cycle {cycle_number}: director={pilot_result.director_path} "
             f"builder={pilot_result.builder_path} report={pilot_result.report_path} blocked={pilot_result.blocked}"
         )
+        _publish_devlog(args.repo_root, state_dir)
 
     return 1 if last_blocked else 0
+
+
+def _publish_devlog(repo_root: Path, state_dir: Path) -> None:
+    out_dir = repo_root / "site"
+    result = publish_site(repo_root, state_dir, out_dir)
+    print(f"published devlog: {result.devlog_index} ({result.cycle_count} cycles)")
 
 
 def _git_output(repo_root: Path, *args: str) -> str:
@@ -411,6 +420,7 @@ def _lint_builder_proposal(repo_root: Path, builder_output: str) -> list[str]:
             for issue in _lint_shell_command(command, npm_scripts):
                 _append_issue(issues, seen_issues, issue)
         for proposed_path in re.findall(r"`([^`]+)`", normalized):
+            proposed_path = proposed_path.strip("`").strip()
             if _is_shell_command(proposed_path):
                 for issue in _lint_shell_command(proposed_path, npm_scripts):
                     _append_issue(issues, seen_issues, issue)
@@ -437,16 +447,20 @@ def _extract_shell_command(line: str) -> str | None:
     stripped = stripped.lstrip("-*").strip()
     stripped = stripped.strip("`").strip()
     if _is_shell_command(stripped):
-        return stripped
+        return _normalize_shell_command(stripped)
     return None
 
 
+def _normalize_shell_command(command: str) -> str:
+    return " ".join(part.strip("`") for part in command.strip().strip("`").split())
+
+
 def _is_shell_command(value: str) -> bool:
-    return value.startswith(("npm ", "npx ", "python ", "python3 ", "playwright ", "vitest ", "tsc "))
+    return value.strip("`").startswith(("npm ", "npx ", "python ", "python3 ", "playwright ", "vitest ", "tsc "))
 
 
 def _lint_shell_command(command: str, npm_scripts: set[str]) -> list[str]:
-    tokens = command.split()
+    tokens = _normalize_shell_command(command).split()
     if not tokens:
         return []
     executable = tokens[0]

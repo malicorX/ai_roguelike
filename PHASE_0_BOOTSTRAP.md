@@ -27,7 +27,10 @@ ai_roguelike/
     evaluate_candidate.py
     reports/
   .github/workflows/ci.yml   # test suite = merge gate + a smoke build
-  deploy/               # theebie serving (static build → /ui/roguelike or its own vhost) + smoke
+  deploy/               # theebie serving (static build → /sites/roguelike) + devlog/docs publish + smoke
+  site/                 # generated static devlog + docs (not committed; built on sparky1 before deploy)
+    devlog/
+    docs/
   develop.ps1           # the human-facing launcher (runs on cursorComputer)
   VISUAL_STYLE.md
   ROADMAP.md  HOWTO_AI.md  PHASE_0_BOOTSTRAP.md
@@ -138,8 +141,7 @@ the feedback actionable for sparky1.
 
 ## 8. CI + deploy (Phase 0 wiring)
 - `ci.yml`: install → browser install → `npm test` → `npm run typecheck` → `npm run build` → `npm run smoke` on push/PR to `main`. This is the **merge gate**.
-- Deploy: a `deploy/` script the **Deployer** role runs from sparky1 → theebie (static build served
-  under theebie; add the route to the public whitelist per HOWTO §6/§8). Post-deploy `roguelike-smoke`.
+- Deploy: a `deploy/` script the **Deployer** role runs from sparky1 → theebie (static game build plus generated devlog/docs under `/sites/roguelike/`). Post-deploy `roguelike-smoke`.
 
 ## 9. The v0 game (minimal but real, so cycle 1 has something to improve)
 A single screen: a rendered dungeon room, `@` player, arrow/WASD movement, FOV/lighting, one

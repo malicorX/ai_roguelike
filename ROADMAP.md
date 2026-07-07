@@ -13,7 +13,7 @@ These are non-negotiable — they are what let the loop run unattended without c
 - **Always reversible.** Every deploy is rollback-able; the loop reverts its own bad commit automatically on a red smoke.
 - **Bounded.** The loop stops at `--time`, an iteration cap, a token/cost budget, or a `STOP` file. It never runs truly forever without a ceiling.
 - **Contained.** Agents get the repo + the deploy target and nothing else — no host shell, no secrets, no infra creds. (Hard-won lesson: unaudited host shells were the hole.)
-- **Observable.** Every cycle logs its objective, diff, review verdicts, test results, visual evaluation, and deploy outcome. A dashboard shows the game evolving.
+- **Observable.** Every cycle logs its objective, diff, review verdicts, test results, visual evaluation, and deploy outcome. A static **devlog** at `sites/roguelike/devlog/` renders cycle artifacts for humans; **docs** at `sites/roguelike/docs/` hold the living game and studio reference.
 
 ## 2. The studio (agent roles)
 Each role is a prompt + tool profile. **sparky1** is the developer studio that owns repo writes, branches, implementation, review, integration, and deploy decisions. **sparky2** is the evaluation lab: it pulls candidate builds, runs the game, hunts bugs, measures playability/fun/balance, captures screenshots, and returns structured reports. A role can be one model or several competing.
@@ -63,7 +63,7 @@ develop.ps1 --time 100h [--repo github.com/malicorx/ai_roguelike]
 
 ## 6. Phases
 - **Phase 0 — Bootstrap (the ONLY human-touched step).** Create the repo + CI + deploy pipeline, the loop harness (`develop.ps1` + role runners), sparky1/sparky2 working directories, and a minimal playable roguelike: a rendered map, player movement, FOV, one enemy, a death screen, visual style guide, and screenshot smoke. Then hands off.
-- **Phase 1 — Loop online.** The studio first runs a bounded no-write pilot loop: Director picks an objective, Builder records an implementation proposal, sparky2 evaluates the candidate, and `STOP` can halt the loop. After that stays stable, the studio graduates to shipping small, green-gated, deployed enhancements each cycle. Goal: prove the loop is **stable and reversible** before trusting unattended writes.
+- **Phase 1 — Loop online.** The studio first runs a bounded no-write pilot loop: Director picks an objective, Builder records an implementation proposal, sparky2 evaluates the candidate, and `STOP` can halt the loop. Each cycle publishes a static devlog + docs snapshot to theebie. After that stays stable, the studio graduates to shipping small, green-gated, deployed enhancements each cycle. Goal: prove the loop is **stable and reversible** before trusting unattended writes.
 - **Phase 2 — Depth.** Procedural dungeon generation, items/inventory, enemy variety + AI, progression, permadeath + a meta-loop. The agents grow the actual game.
 - **Phase 3 — Polish + self-direction.** The Director sets its own goals from **playtest telemetry** and a "fun/quality" signal (a critic agent + the Player agent's reports); art and balance evolve from data.
 - **Phase 4 — Open-ended.** Continuous self-improvement inside the rails; the human only reads the changelog and occasionally nudges direction.

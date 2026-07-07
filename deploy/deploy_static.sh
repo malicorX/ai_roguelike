@@ -14,7 +14,13 @@ npm ci
 npm test
 npm run build
 
-ssh "$THEEBIE_HOST" "mkdir -p '$THEEBIE_SITE_DIR'"
+python3 -m studio.publish_devlog --repo-root "$REPO_DIR" --state-dir "$REPO_DIR/studio/state" --out-dir "$REPO_DIR/site"
+
+ssh "$THEEBIE_HOST" "mkdir -p '$THEEBIE_SITE_DIR' '$THEEBIE_SITE_DIR/devlog' '$THEEBIE_SITE_DIR/docs'"
 rsync -az --delete "$REPO_DIR/game/dist/" "$THEEBIE_HOST:$THEEBIE_SITE_DIR/"
+rsync -az --delete "$REPO_DIR/site/devlog/" "$THEEBIE_HOST:$THEEBIE_SITE_DIR/devlog/"
+rsync -az --delete "$REPO_DIR/site/docs/" "$THEEBIE_HOST:$THEEBIE_SITE_DIR/docs/"
 
 echo "Deployed ai_roguelike to https://www.theebie.de/sites/roguelike/"
+echo "Devlog: https://www.theebie.de/sites/roguelike/devlog/"
+echo "Docs: https://www.theebie.de/sites/roguelike/docs/"

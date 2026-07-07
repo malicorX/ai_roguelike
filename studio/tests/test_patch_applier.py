@@ -3,7 +3,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from studio.patch_applier import PatchApplyError, PatchExtractError, apply_unified_diff, diff_paths, extract_unified_diff
+from studio.patch_applier import PatchApplyError, PatchExtractError, apply_unified_diff, diff_paths, extract_unified_diff, repair_unified_diff
 
 
 class PatchApplierTest(unittest.TestCase):
@@ -70,6 +70,44 @@ npm test
 
             with self.assertRaises(PatchApplyError):
                 apply_unified_diff(repo, "diff --git a/missing.txt b/missing.txt\n")
+
+    def test_repair_unified_diff_reanchors_misaligned_hunk(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            repo = Path(tmpdir)
+            _init_repo(repo)
+            target = repo / "game" / "tests" / "engine.test.ts"
+            target.parent.mkdir(parents=True)
+            target.write_text(
+                "\n".join(
+                    [
+                        'describe("suite", () => {',
+                        '  it("existing", () => {',
+                        "    expect(true).toBe(true);",
+                        "  });",
+                        "});",
+                        "",
+                    ]
+                ),
+                encoding="utf-8",
+            )
+            _git(repo, "add", ".")
+            _git(repo, "commit", "-m", "init")
+
+            diff = """--- a/game/tests/engine.test.ts
++++ b/game/tests/engine.test.ts
+@@ -99,3 +99,7 @@
+     expect(true).toBe(true);
+   });
++
++  it("added", () => {
++    expect(1).toBe(1);
++  });
+ });
+"""
+            repaired = repair_unified_diff(repo, diff)
+            self.assertIn("@@ -3,3 +3,7 @@", repaired)
+            apply_unified_diff(repo, diff)
+            self.assertIn('it("added"', target.read_text(encoding="utf-8"))
 
 
 def _init_repo(repo: Path) -> None:

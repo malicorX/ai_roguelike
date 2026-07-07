@@ -158,5 +158,5 @@ Everything else (procgen, items, biomes, meta-progression, art) is what the stud
 - [x] Land `studio/` — `orchestrator.py`, `role_runner.py`, the `roles/*.md`, checkpoint/STOP.
 - [x] Land `eval_lab/` — candidate request schema, sparky2 runner, QA/design report schema.
 - [x] Land `develop.ps1`.
-- [ ] Dry-run: `develop.ps1 -Time 30m -MaxCycles 1` → confirm one safe no-write evaluation cycle delegates to sparky2 and records request/report artifacts.
+- [x] Dry-run: `develop.ps1 -Time 30m -MaxCycles 1` → confirm one safe no-write Director model cycle delegates evaluation to sparky2 and records director/request/report artifacts.
 - [ ] Hand off: `develop.ps1 --time 100h`.

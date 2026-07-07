@@ -14,6 +14,7 @@ npm ci
 npm test
 npm run build
 
+cd "$REPO_DIR"
 python3 -m studio.publish_devlog --repo-root "$REPO_DIR" --state-dir "$REPO_DIR/studio/state" --out-dir "$REPO_DIR/site"
 
 ssh "$THEEBIE_HOST" "mkdir -p '$THEEBIE_SITE_DIR' '$THEEBIE_SITE_DIR/devlog' '$THEEBIE_SITE_DIR/docs'"

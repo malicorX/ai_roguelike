@@ -54,6 +54,9 @@ class PublishDevlogTest(unittest.TestCase):
             self.assertTrue((out_dir / "devlog" / "artifacts" / "cycle-0002-builder.md").is_file())
             self.assertIn("Improve smoke logging.", index_html)
             self.assertIn("blocked", cycle_html.lower())
+            self.assertIn("sparky1", index_html)
+            self.assertIn("Handoff", index_html)
+            self.assertIn("sparky2", index_html)
             self.assertIn("sparky2", docs_html)
             self.assertIn("Readable grid.", visual_html)
 

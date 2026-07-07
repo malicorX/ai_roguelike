@@ -40,17 +40,18 @@ sparky2 should capture and review at least these deterministic states for every 
 
 Future scenarios should cover inventory, ranged attacks, status effects, shops, bosses, and biome-specific lighting.
 
-## Automated Visual Smoke
+## Automated Visual Gates
 
-The current Phase 0 visual gate is intentionally mechanical and deterministic:
+The current Phase 0 visual gates are intentionally mechanical and deterministic:
 
 - Boot the production browser build with Playwright.
 - Read the deterministic start state through `window.__AI_ROGUELIKE_TEST__`.
 - Sample the canvas tile regions for the player and first enemy.
 - Block the candidate if player/enemy colors disappear, overlap the wrong tile, or become indistinguishable from the scene.
+- Compare Linux-generated canvas screenshot baselines for the start room and first post-move state.
 
 This is not a replacement for art direction. It is the first cheap guard against regressions where
-the game still compiles but the player or enemy stops being readable.
+the game still compiles but the player, enemy, or core scene composition stops being readable.
 
 ## Review Checklist
 

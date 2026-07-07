@@ -32,7 +32,7 @@ class EvaluateCandidateTest(unittest.TestCase):
         self.assertEqual(report.qa.verdict, "PASS")
         self.assertEqual(report.qa.checks, ["npm test", "npm run build", "npm run smoke"])
         self.assertEqual(report.design.verdict, "BACKLOG")
-        self.assertIn("Automated canvas readability smoke passed.", report.design.visual_notes)
+        self.assertIn("Automated canvas readability and screenshot baselines passed.", report.design.visual_notes)
         self.assertFalse(report.blocks_merge())
 
     def test_evaluate_candidate_reports_rework_when_a_check_fails(self) -> None:

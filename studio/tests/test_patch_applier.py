@@ -105,7 +105,7 @@ npm test
  });
 """
             repaired = repair_unified_diff(repo, diff)
-            self.assertIn("@@ -3,3 +3,7 @@", repaired)
+            self.assertIn("@@ -3,3 +3,6 @@", repaired)
             apply_unified_diff(repo, diff)
             self.assertIn('it("added"', target.read_text(encoding="utf-8"))
 

@@ -14,15 +14,18 @@ class PatchExtractError(RuntimeError):
 
 
 def extract_unified_diff(text: str) -> str:
-    fenced = re.search(r"```(?:diff)?\s*\n(.*?)```", text, re.DOTALL | re.IGNORECASE)
-    if fenced:
-        candidate = fenced.group(1).strip()
-        if candidate.startswith("diff --git") or candidate.startswith("--- "):
+    for match in re.finditer(r"```(?:\w+)?\s*\n(.*?)```", text, re.DOTALL | re.IGNORECASE):
+        candidate = match.group(1).strip()
+        if _looks_like_unified_diff(candidate):
             return candidate + "\n"
     stripped = text.strip()
-    if stripped.startswith("diff --git") or stripped.startswith("--- "):
+    if _looks_like_unified_diff(stripped):
         return stripped + ("\n" if not stripped.endswith("\n") else "")
     raise PatchExtractError("Builder output did not include a unified diff fenced block.")
+
+
+def _looks_like_unified_diff(candidate: str) -> bool:
+    return candidate.startswith("diff --git") or candidate.startswith("--- ")
 
 
 def apply_unified_diff(repo_root: Path, diff: str) -> None:
@@ -51,9 +54,18 @@ def apply_unified_diff(repo_root: Path, diff: str) -> None:
 
 def diff_paths(diff: str) -> list[str]:
     paths: list[str] = []
+    seen: set[str] = set()
     for line in diff.splitlines():
+        path: str | None = None
         if line.startswith("diff --git "):
             match = re.match(r"diff --git a/(.+?) b/(.+)$", line)
             if match:
-                paths.append(match.group(2))
+                path = match.group(2)
+        elif line.startswith("--- a/"):
+            match = re.match(r"--- a/(.+)$", line)
+            if match:
+                path = match.group(1)
+        if path and path not in seen:
+            seen.add(path)
+            paths.append(path)
     return paths

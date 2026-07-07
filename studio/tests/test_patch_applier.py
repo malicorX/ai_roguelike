@@ -26,6 +26,22 @@ diff --git a/readme.txt b/readme.txt
         with self.assertRaises(PatchExtractError):
             extract_unified_diff("Only a proposal without a diff.")
 
+    def test_extract_unified_diff_skips_non_diff_fenced_blocks(self) -> None:
+        text = """Summary
+```bash
+npm test
+```
+```diff
+--- a/readme.txt
++++ b/readme.txt
+@@ -1 +1,2 @@
+ hello
++world
+```
+"""
+        diff = extract_unified_diff(text)
+        self.assertIn("readme.txt", diff)
+
     def test_apply_unified_diff_updates_file(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             repo = Path(tmpdir)

@@ -289,7 +289,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     for offset in range(cycles):
         cycle_number = start_cycle + offset
         if (state_dir / "STOP").exists():
-            print(f"STOP file found at {state_dir / 'STOP'}; exiting before cycle {cycle_number}.")
+            print(f"STOP file found at {state_dir / 'STOP'}; exiting before cycle {cycle_number}.", flush=True)
             break
         if args.dry_run:
             dry_result = run_dry_cycle(
@@ -302,7 +302,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 role_timeout_seconds=args.role_timeout_seconds,
             )
             last_blocked = dry_result.blocked
-            print(f"cycle {cycle_number}: report={dry_result.report_path} blocked={dry_result.blocked}")
+            print(f"cycle {cycle_number}: report={dry_result.report_path} blocked={dry_result.blocked}", flush=True)
             _publish_devlog(args.repo_root, state_dir)
             continue
 
@@ -321,7 +321,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         print(
             f"cycle {cycle_number}: director={pilot_result.director_path} "
             f"builder={pilot_result.builder_path} report={pilot_result.report_path} "
-            f"branch={pilot_result.branch} blocked={pilot_result.blocked}"
+            f"branch={pilot_result.branch} blocked={pilot_result.blocked}",
+            flush=True,
         )
         _publish_devlog(args.repo_root, state_dir)
 
@@ -331,7 +332,7 @@ def main(argv: Sequence[str] | None = None) -> int:
 def _publish_devlog(repo_root: Path, state_dir: Path) -> None:
     out_dir = repo_root / "site"
     result = publish_site(repo_root, state_dir, out_dir)
-    print(f"published devlog: {result.devlog_index} ({result.cycle_count} cycles)")
+    print(f"published devlog: {result.devlog_index} ({result.cycle_count} cycles)", flush=True)
 
 
 def _deploy_enabled(value: str) -> bool:
@@ -597,28 +598,50 @@ def _builder_context(repo_root: Path, objective: str, director_output: str, *, a
         else "Mode: Phase 1 pilot. Return an implementation proposal only; do not claim files were changed."
     )
     extra_rules = (
-        "The unified diff must apply cleanly with git apply. Include only files needed for the objective."
+        "The unified diff must use git-style headers (diff --git or --- a/... +++ b/...) and apply cleanly to the source excerpts below. Do not invent class structures that are not in the excerpts."
         if apply_writes
         else "Do not claim tests were run. You may recommend test commands to run later."
     )
-    return "\n".join(
-        [
+    parts = [
             f"Selected objective: {objective}",
-            "",
-            "Director output:",
-            director_output.strip(),
-            "",
-            mode_line,
-            "Do not invent paths. Proposed changed files must be listed below, or explicitly labeled as NEW.",
-            extra_rules,
-            "",
-            "Known existing paths:",
-            file_summary,
-            "",
-            "Known test commands:",
-            command_summary,
-        ]
-    )
+        "",
+        "Director output:",
+        director_output.strip(),
+        "",
+        mode_line,
+        "Do not invent paths. Proposed changed files must be listed below, or explicitly labeled as NEW.",
+        extra_rules,
+        "",
+        "Known existing paths:",
+        file_summary,
+        "",
+        "Known test commands:",
+        command_summary,
+    ]
+    if apply_writes:
+        snippets = _source_snippets(
+            repo_root,
+            [
+                "game/src/engine.ts",
+                "game/src/main.ts",
+                "game/src/testHarness.ts",
+                "game/tests/engine.test.ts",
+            ],
+        )
+        if snippets:
+            parts.extend(["", "Current source excerpts (diffs must apply to this code, not invented classes):", snippets])
+    return "\n".join(parts)
+
+
+def _source_snippets(repo_root: Path, paths: list[str], *, max_lines: int = 50) -> str:
+    blocks: list[str] = []
+    for path in paths:
+        source = repo_root / path
+        if not source.is_file():
+            continue
+        excerpt = "\n".join(source.read_text(encoding="utf-8").splitlines()[:max_lines])
+        blocks.append(f"#### {path}\n```typescript\n{excerpt}\n```")
+    return "\n\n".join(blocks)
 
 
 def _run_builder(

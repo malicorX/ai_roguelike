@@ -15,7 +15,7 @@ $ErrorActionPreference = "Stop"
 
 $dryRunArg = if ($FullLoop) { "" } else { "--dry-run" }
 $applyWritesArg = if ($ApplyWrites) { "--apply-writes" } else { "" }
-$orchestratorCommand = "python3 -m studio.orchestrator --time '$Time' --max-cycles $MaxCycles --deploy '$Deploy' --evaluation-target '$EvaluationTarget' --director-mode '$DirectorMode' --role-timeout-seconds $RoleTimeoutSeconds --models '$ModelAssignments' $dryRunArg $applyWritesArg"
+$orchestratorCommand = "PYTHONUNBUFFERED=1 python3 -u -m studio.orchestrator --time '$Time' --max-cycles $MaxCycles --deploy '$Deploy' --evaluation-target '$EvaluationTarget' --director-mode '$DirectorMode' --role-timeout-seconds $RoleTimeoutSeconds --models '$ModelAssignments' $dryRunArg $applyWritesArg"
 $remoteCommand = @(
   "cd ~/ai_roguelike"
   'export XDG_RUNTIME_DIR=/run/user/$UID'

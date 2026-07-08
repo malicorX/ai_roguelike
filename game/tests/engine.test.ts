@@ -10,6 +10,7 @@ describe("roguelike engine", () => {
     expect(first.map.width).toBe(12);
     expect(first.map.height).toBe(8);
     expect(first.player).toEqual({ id: "player", x: 2, y: 2, hp: 10, attack: 3 });
+    expect(first.enemies.length).toBe(1);
     expect(first.enemies).toEqual([{ id: "enemy-1", x: 7, y: 4, hp: 6, attack: 2 }]);
     expect(second).toEqual(first);
   });
@@ -37,6 +38,7 @@ describe("roguelike engine", () => {
     };
 
     const hit = stepGame(nearEnemy, { type: "move", dx: 1, dy: 0 });
+    expect(hit.enemies.length).toBe(1);
     expect(hit.player).toMatchObject({ x: 6, y: 4, hp: 8 });
     expect(hit.enemies).toEqual([{ id: "enemy-1", x: 7, y: 4, hp: 3, attack: 2 }]);
     expect(hit.log).toContain("You hit enemy-1 for 3 damage.");
@@ -71,9 +73,11 @@ describe("roguelike engine", () => {
     // First, move player to adjacent position (as in existing test)
     const nearEnemy = { ...game, player: { ...game.player, x: 6, y: 4 } };
     const hit = stepGame(nearEnemy, { type: "move", dx: 1, dy: 0 });
+    expect(hit.enemies.length).toBe(1);
     // Now move again to defeat enemy (since enemy hp reduced)
     const defeated = stepGame(hit, { type: "move", dx: 1, dy: 0 });
     expect(defeated.enemies).toEqual([]);
+    expect(defeated.enemies.length).toBe(0);
     expect(defeated.log).toContain("enemy-1 dies.");
   });
   it("returns object with expected top-level properties", () => {

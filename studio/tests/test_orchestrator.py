@@ -1176,6 +1176,41 @@ class OrchestratorTest(unittest.TestCase):
             script.chmod(0o755)
 
 
+    def test_source_snippets_includes_full_scoped_file_under_limit(self) -> None:
+        from studio.orchestrator import _source_snippets
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            repo = Path(tmpdir)
+            target = repo / "game" / "src" / "main.ts"
+            target.parent.mkdir(parents=True)
+            lines = [f"const line{i} = {i};" for i in range(123)]
+            lines.append('status.textContent = "HP";')
+            target.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+            snippets = _source_snippets(repo, ["game/src/main.ts"], scoped_paths={"game/src/main.ts"})
+
+        self.assertIn('status.textContent = "HP";', snippets)
+        self.assertIn(" 124|", snippets)
+        self.assertIn("line-number prefixes", snippets)
+
+    def test_source_snippets_uses_head_and_tail_for_large_scoped_file(self) -> None:
+        from studio.orchestrator import _source_snippets
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            repo = Path(tmpdir)
+            target = repo / "game" / "src" / "engine.ts"
+            target.parent.mkdir(parents=True)
+            lines = [f"const line{i} = {i};" for i in range(300)]
+            lines[250] = "export function createGame() {"
+            target.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+            snippets = _source_snippets(repo, ["game/src/engine.ts"], scoped_paths={"game/src/engine.ts"})
+
+        self.assertIn("const line0 = 0;", snippets)
+        self.assertIn("export function createGame() {", snippets)
+        self.assertIn("lines omitted", snippets)
+
+
 def _is_windows() -> bool:
     return __import__("os").name == "nt"
 

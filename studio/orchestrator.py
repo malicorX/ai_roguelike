@@ -417,11 +417,57 @@ def run_pilot_cycle(
         )
 
     if apply_writes:
-        try:
-            candidate_diff = extract_unified_diff(builder_output)
-            diff_validation_issues = validate_unified_diff(repo_root, candidate_diff)
-        except PatchExtractError as exc:
-            diff_validation_issues = [str(exc)]
+        diff_validation_issues: list[str] = []
+        for diff_attempt in range(2):
+            try:
+                candidate_diff = extract_unified_diff(builder_output)
+                diff_validation_issues = validate_unified_diff(repo_root, candidate_diff)
+            except PatchExtractError as exc:
+                diff_validation_issues = [str(exc)]
+            if not diff_validation_issues:
+                break
+            if diff_attempt == 0 and director_mode == DirectorMode.MODEL:
+                _cycle_log(
+                    state_dir,
+                    cycle_number,
+                    f"builder diff validation failed ({len(diff_validation_issues)} issues), retrying",
+                )
+                try:
+                    builder_output = _run_builder(
+                        repo_root,
+                        state_dir,
+                        cycle_number,
+                        selected_objective,
+                        director_output,
+                        designer_output,
+                        director_mode=director_mode,
+                        studio_config=studio_config,
+                        roles_dir=roles_dir,
+                        role_runner=role_runner,
+                        role_timeout_seconds=role_timeout_seconds,
+                        apply_writes=apply_writes,
+                        diff_validation_issues=diff_validation_issues,
+                    )
+                except (TimeoutError, OSError, RuntimeError, ValueError) as exc:
+                    return _blocked_role_failure_result(
+                        repo_root,
+                        state_dir,
+                        cycle_number=cycle_number,
+                        objective=selected_objective,
+                        spec=spec,
+                        role="builder",
+                        error=str(exc),
+                        director_path=director_path,
+                        designer_path=designer_path,
+                        builder_path=builder_path,
+                        reviewer_path=reviewer_path,
+                        proposal_lint_path=proposal_lint_path,
+                        request_path=request_path,
+                        report_path=report_path,
+                        apply_writes=apply_writes,
+                    )
+                builder_path.write_text(builder_output.rstrip() + "\n", encoding="utf-8")
+                continue
         if diff_validation_issues:
             _cycle_log(state_dir, cycle_number, f"blocked at diff validation ({len(diff_validation_issues)} issues)")
             return _blocked_gate_result(
@@ -1528,7 +1574,9 @@ def _source_snippets(
     *,
     max_lines: int = 50,
     scoped_paths: set[str] | None = None,
-    scoped_full_file_max_lines: int = 120,
+    scoped_full_file_max_lines: int = 250,
+    scoped_partial_head_lines: int = 80,
+    scoped_partial_tail_lines: int = 80,
 ) -> str:
     blocks: list[str] = []
     for path in paths:
@@ -1536,12 +1584,25 @@ def _source_snippets(
         if not source.is_file():
             continue
         lines = source.read_text(encoding="utf-8").splitlines()
-        if scoped_paths and path in scoped_paths and len(lines) <= scoped_full_file_max_lines:
-            limit = len(lines)
+        if scoped_paths and path in scoped_paths:
+            if len(lines) <= scoped_full_file_max_lines:
+                excerpt_lines = lines
+            elif len(lines) <= scoped_partial_head_lines + scoped_partial_tail_lines:
+                excerpt_lines = lines
+            else:
+                omitted = len(lines) - scoped_partial_head_lines - scoped_partial_tail_lines
+                excerpt_lines = [
+                    *lines[:scoped_partial_head_lines],
+                    f"// ... {omitted} lines omitted; copy context only from lines shown below ...",
+                    *lines[-scoped_partial_tail_lines:],
+                ]
         else:
-            limit = min(len(lines), max_lines)
-        excerpt = "\n".join(lines[:limit])
-        blocks.append(f"#### {path}\n```typescript\n{excerpt}\n```")
+            excerpt_lines = lines[: min(len(lines), max_lines)]
+        numbered = "\n".join(f"{index + 1:4d}| {line}" for index, line in enumerate(excerpt_lines))
+        blocks.append(
+            f"#### {path}\n```typescript\n{numbered}\n```\n"
+            "(Copy diff context from these lines exactly; omit the `NNNN| ` line-number prefixes.)"
+        )
     return "\n\n".join(blocks)
 
 
@@ -1559,6 +1620,7 @@ def _run_builder(
     role_runner: RoleRunner,
     role_timeout_seconds: int,
     apply_writes: bool = False,
+    diff_validation_issues: list[str] | None = None,
 ) -> str:
     if director_mode == DirectorMode.STATIC:
         return "\n".join(
@@ -1578,6 +1640,18 @@ def _run_builder(
         designer_output,
         apply_writes=apply_writes,
     )
+    if diff_validation_issues:
+        context = "\n".join(
+            [
+                context,
+                "",
+                "Your previous unified diff was rejected by diff validation:",
+                *[f"- {issue}" for issue in diff_validation_issues],
+                "",
+                "Regenerate the diff using only exact context lines from the source excerpts above. "
+                "Use one hunk per file in top-to-bottom source order.",
+            ]
+        )
     output = role_runner(
         studio_config,
         roles_dir,

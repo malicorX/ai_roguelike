@@ -933,12 +933,24 @@ def _director_context(
         if apply_writes
         else "Phase 1 pilot: proposal only — no repository writes are applied."
     )
+    write_rules = (
+        [
+            "",
+            "Write-mode rules:",
+            "- Objectives must request concrete, small game changes (game/src, game/tests, game/smoke).",
+            "- Do not pick verification-only objectives that forbid code changes.",
+            "- Avoid repeating objectives that recently blocked at reviewer or lint.",
+        ]
+        if apply_writes
+        else []
+    )
     return "\n".join(
         [
             f"Branch: {branch}",
             f"Commit: {commit}",
             f"Cycle number: {cycle_number}",
             f"Mode: {mode_line}",
+            *write_rules,
             "",
             "Backlog (latest items):",
             load_backlog_summary(repo_root),

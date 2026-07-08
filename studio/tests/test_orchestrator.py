@@ -31,6 +31,28 @@ class OrchestratorTest(unittest.TestCase):
     def _pass_reviewer_output(self) -> str:
         return "PASS"
 
+    def test_director_context_includes_write_mode_rules(self) -> None:
+        from studio.orchestrator import _director_context
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            repo = Path(tmpdir)
+            state_dir = repo / "studio" / "state"
+            state_dir.mkdir(parents=True)
+
+            with patch("studio.orchestrator._git_output") as git_output:
+                git_output.side_effect = ["main", "abc1234"]
+                context = _director_context(
+                    repo,
+                    state_dir,
+                    5,
+                    objective="Fallback",
+                    spec="Fallback spec",
+                    apply_writes=True,
+                )
+
+        self.assertIn("Write-mode rules", context)
+        self.assertIn("concrete, small game changes", context)
+
     def test_director_context_includes_write_mode_and_recent_cycles(self) -> None:
         from studio.orchestrator import _director_context
 

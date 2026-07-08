@@ -76,4 +76,13 @@ describe("roguelike engine", () => {
     expect(defeated.enemies).toEqual([]);
     expect(defeated.log).toContain("enemy-1 dies.");
   });
+  it("returns object with expected top-level properties", () => {
+    const game = createGame({ seed: 1 });
+    const result = stepGame(game, { type: "move", dx: 0, dy: 0 });
+    
+    expect(result).toHaveProperty("map");
+    expect(result).toHaveProperty("enemies");
+    expect(result).toHaveProperty("player");
+    expect(result).toHaveProperty("log");
+  });
 });

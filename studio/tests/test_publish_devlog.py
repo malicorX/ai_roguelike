@@ -78,6 +78,50 @@ class PublishDevlogTest(unittest.TestCase):
         self.assertTrue(cycles[0].blocked)
         self.assertIn("Evaluation report missing.", cycles[0].blocking_reasons)
 
+    def test_publish_site_renders_critic_on_cycle_page_and_index(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            repo = Path(tmpdir)
+            state_dir = repo / "studio" / "state"
+            out_dir = repo / "site"
+            (repo / "VISUAL_STYLE.md").write_text("# Visual Style\n", encoding="utf-8")
+            self._write_cycle(
+                state_dir,
+                5,
+                director="Objective: Increase player hp.",
+                builder="diff",
+                proposal_lint={"verdict": "PASS", "issues": []},
+                request={"branch": "main", "commit": "abc1234", "objective": "Increase player hp."},
+                report={"qa": {"verdict": "REWORK", "bugs": ["diff failed"]}, "design": {"verdict": "BACKLOG"}},
+            )
+            (state_dir / "cycle-0005-critic.json").write_text(
+                json.dumps(
+                    {
+                        "scores": {
+                            "player_visible": 1,
+                            "mechanical_depth": 2,
+                            "test_value": 3,
+                            "scope_discipline": 4,
+                        },
+                        "next_cycle_constraint": "Prioritize a player-visible gameplay improvement in game/src/.",
+                        "source": "deterministic",
+                    },
+                    indent=2,
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+
+            publish_site(repo, state_dir, out_dir)
+            index_html = (out_dir / "devlog" / "index.html").read_text(encoding="utf-8")
+            cycle_html = (out_dir / "devlog" / "cycle-0005.html").read_text(encoding="utf-8")
+
+            self.assertIn("Cycle critic", cycle_html)
+            self.assertIn("player visible", cycle_html.lower())
+            self.assertIn("Next-cycle constraint", cycle_html)
+            self.assertTrue((out_dir / "devlog" / "artifacts" / "cycle-0005-critic.json").is_file())
+            self.assertIn("1/5", index_html)
+            self.assertIn("player visible", index_html.lower())
+
     def test_publish_site_renders_write_cycle_apply_and_merge_artifacts(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             repo = Path(tmpdir)

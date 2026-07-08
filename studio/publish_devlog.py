@@ -26,6 +26,7 @@ class CycleRecord:
     report: dict[str, Any]
     apply: dict[str, Any]
     merge: dict[str, Any]
+    critic: dict[str, Any]
     blocked: bool
     blocking_reasons: list[str]
     mode: str
@@ -120,6 +121,7 @@ def _load_cycle(state_dir: Path, number: int) -> CycleRecord:
     report = _read_json(state_dir / f"{prefix}-report.json")
     apply = _read_json(state_dir / f"{prefix}-apply.json")
     merge = _read_json(state_dir / f"{prefix}-merge.json")
+    critic = _read_json(state_dir / f"{prefix}-critic.json")
     objective = str(request.get("objective") or _objective_from_director(director))
     mode = "write" if apply or merge or "write cycle" in str(request.get("spec", "")).lower() else "proposal"
     blocked, reasons = _cycle_status(proposal_lint, report, reviewer=reviewer, apply=apply, merge=merge)
@@ -138,6 +140,7 @@ def _load_cycle(state_dir: Path, number: int) -> CycleRecord:
         report=report,
         apply=apply,
         merge=merge,
+        critic=critic,
         blocked=blocked,
         blocking_reasons=reasons,
         mode=mode,
@@ -208,6 +211,7 @@ def _copy_cycle_artifacts(state_dir: Path, artifacts_dir: Path, number: int) -> 
         "report.json",
         "apply.json",
         "merge.json",
+        "critic.json",
         "run.log",
     ):
         source = state_dir / f"{prefix}-{suffix}"
@@ -220,11 +224,13 @@ def _render_devlog_index(cycles: list[CycleRecord]) -> str:
     for cycle in reversed(cycles):
         status = "blocked" if cycle.blocked else "pass"
         phases = _cycle_phases(cycle)
+        critic_cell = _critic_index_cell(cycle.critic)
         rows.append(
             "<tr>"
             f"<td><a href=\"./cycle-{cycle.number:04d}.html\">Cycle {cycle.number}</a></td>"
             f"<td><span class=\"status {status}\">{status}</span></td>"
             f"<td>{_esc(cycle.mode)}</td>"
+            f"<td class=\"phase-cell critic-cell\">{critic_cell}</td>"
             f"<td class=\"phase-cell roles\">{_esc(', '.join(cycle.roles_run))}</td>"
             f"<td class=\"phase-cell\">{_esc(phases.sparky1)}</td>"
             f"<td class=\"phase-cell handoff\">{_esc(phases.handoff)}</td>"
@@ -233,7 +239,7 @@ def _render_devlog_index(cycles: list[CycleRecord]) -> str:
             f"<td><code>{_esc(cycle.branch)}@{_esc(cycle.commit)}</code></td>"
             "</tr>"
         )
-    body = "\n".join(rows) if rows else "<tr><td colspan=\"9\">No studio cycles recorded yet.</td></tr>"
+    body = "\n".join(rows) if rows else "<tr><td colspan=\"10\">No studio cycles recorded yet.</td></tr>"
     return _page_shell(
         title="ai_roguelike devlog",
         active_nav="devlog",
@@ -246,7 +252,7 @@ def _render_devlog_index(cycles: list[CycleRecord]) -> str:
     <article class="pipeline-lane sparky1">
       <p class="lane-label">sparky1 · development</p>
       <p>Director picks the objective. Builder proposes or writes a diff. Proposal lint and (in write mode) git apply/merge all run on the studio machine.</p>
-      <p class="lane-artifacts">Artifacts: <code>director.md</code>, <code>designer.md</code>, <code>builder.md</code>, <code>reviewer.json</code>, <code>proposal-lint.json</code>, optional <code>apply.json</code> / <code>merge.json</code></p>
+      <p class="lane-artifacts">Artifacts: <code>director.md</code>, <code>designer.md</code>, <code>builder.md</code>, <code>reviewer.json</code>, <code>proposal-lint.json</code>, <code>critic.json</code>, optional <code>apply.json</code> / <code>merge.json</code></p>
     </article>
     <article class="pipeline-lane handoff">
       <p class="lane-label">handoff · transport</p>
@@ -264,7 +270,7 @@ def _render_devlog_index(cycles: list[CycleRecord]) -> str:
   <h2>Latest cycles</h2>
   <table>
     <thead>
-      <tr><th>Cycle</th><th>Status</th><th>Mode</th><th>Roles</th><th>sparky1</th><th>Handoff</th><th>sparky2</th><th>Objective</th><th>Git</th></tr>
+      <tr><th>Cycle</th><th>Status</th><th>Mode</th><th>Critic</th><th>Roles</th><th>sparky1</th><th>Handoff</th><th>sparky2</th><th>Objective</th><th>Git</th></tr>
     </thead>
     <tbody>
       {body}
@@ -279,6 +285,7 @@ def _render_devlog_index(cycles: list[CycleRecord]) -> str:
     <li><strong>sparky1 · Builder</strong> — proposal or unified diff from the Designer spec only.</li>
     <li><strong>sparky1 · Reviewer</strong> — PASS/REWORK gate before apply or sparky2 (soul: <code>roles/reviewer.md</code>).</li>
     <li><strong>sparky1 · Proposal lint</strong> — blocks invented paths and unknown test commands.</li>
+    <li><strong>sparky1 · Cycle critic</strong> — scores the finished cycle (player-visible impact, mechanics, tests, scope) and sets the next-cycle constraint for Director.</li>
     <li><strong>sparky1 · Write path</strong> (optional) — apply diff on a feature branch, merge to <code>main</code> only after sparky2 passes.</li>
     <li><strong>Handoff</strong> — <code>request.json</code> copied to sparky2 (and branch pushed when not on <code>main</code>).</li>
     <li><strong>sparky2 · Evaluation</strong> — automated unit, build, browser smoke, plus optional Art Director / Player LLM roles; <code>report.json</code> copied back.</li>
@@ -363,6 +370,7 @@ def _render_cycle_page(cycle: CycleRecord) -> str:
     design = cycle.report.get("design", {})
     apply = cycle.apply
     merge = cycle.merge
+    critic_section = _render_critic_section(cycle)
     write_section = ""
     if apply or merge:
         write_section = f"""
@@ -448,15 +456,84 @@ def _render_cycle_page(cycle: CycleRecord) -> str:
   <pre>{_esc(json.dumps(cycle.report, indent=2))}</pre>
   <p><a href="./artifacts/cycle-{cycle.number:04d}-report.json">raw artifact</a></p>
 </section>
+{critic_section}
 {write_section}
 """
     return _page_shell(
         title=f"Cycle {cycle.number} · ai_roguelike devlog",
         active_nav="devlog",
         heading=f"Cycle {cycle.number}",
-        subtitle="Director, Builder, lint, request, and sparky2 report for one studio cycle.",
+        subtitle="Director, Builder, lint, sparky2 report, and cycle critic scores for one studio cycle.",
         body=body,
     )
+
+
+def _render_critic_section(cycle: CycleRecord) -> str:
+    critic = cycle.critic
+    if not critic:
+        return """
+<section class="panel">
+  <h3>sparky1 · Cycle critic</h3>
+  <p>No critic artifact for this cycle (published before cycle critic was enabled, or cycle did not finalize).</p>
+</section>
+"""
+    scores = critic.get("scores", {})
+    constraint = str(critic.get("next_cycle_constraint", "")).strip()
+    source = str(critic.get("source", "unknown")).strip()
+    score_rows = ""
+    if isinstance(scores, dict) and scores:
+        score_rows = "".join(
+            "<tr>"
+            f"<td>{_esc(_critic_dimension_label(str(name)))}</td>"
+            f"<td><span class=\"critic-score\">{_esc(str(value))}/5</span></td>"
+            f"<td><div class=\"critic-bar\"><span style=\"width:{_critic_bar_width(int(value))}%\"></span></div></td>"
+            "</tr>"
+            for name, value in scores.items()
+            if str(name).strip()
+        )
+    scores_table = (
+        f"<table class=\"critic-table\"><thead><tr><th>Dimension</th><th>Score</th><th></th></tr></thead><tbody>{score_rows}</tbody></table>"
+        if score_rows
+        else "<p>No scores recorded.</p>"
+    )
+    constraint_block = (
+        f"<p><strong>Next-cycle constraint:</strong> {_esc(constraint)}</p>"
+        if constraint
+        else "<p>No next-cycle constraint recorded.</p>"
+    )
+    return f"""
+<section class="panel">
+  <h3>sparky1 · Cycle critic</h3>
+  <p class="lane-note">Post-cycle scorecard (source: <code>{_esc(source)}</code>). Low scores steer the next Director objective.</p>
+  {scores_table}
+  {constraint_block}
+  <p><a href="./artifacts/cycle-{cycle.number:04d}-critic.json">raw artifact</a></p>
+</section>
+"""
+
+
+def _critic_index_cell(critic: dict[str, Any]) -> str:
+    if not critic:
+        return "—"
+    scores = critic.get("scores", {})
+    if not isinstance(scores, dict) or not scores:
+        return "—"
+    lowest_name = min(scores, key=lambda key: int(scores[key]))
+    lowest_value = int(scores[lowest_name])
+    label = _critic_dimension_label(str(lowest_name))
+    return (
+        f"<span class=\"critic-score low\">{lowest_value}/5</span> "
+        f"<span class=\"critic-dim\">{_esc(label)}</span>"
+    )
+
+
+def _critic_dimension_label(name: str) -> str:
+    return name.replace("_", " ")
+
+
+def _critic_bar_width(score: int) -> int:
+    clamped = max(0, min(5, score))
+    return clamped * 20
 
 
 def _render_docs_index() -> str:
@@ -593,6 +670,13 @@ code { font-family: Consolas, monospace; }
 .lane-artifacts, .lane-note { font-size: 0.92rem; color: #c8bcaa; }
 .phase-cell { font-size: 0.9rem; max-width: 16rem; }
 .phase-cell.handoff { color: #d9c27a; }
+.critic-cell { font-size: 0.88rem; max-width: 10rem; }
+.critic-score { font-weight: bold; color: #f6c453; }
+.critic-score.low { color: #ffb4b4; }
+.critic-dim { color: #c8bcaa; }
+.critic-table { margin: 0.75rem 0; }
+.critic-bar { height: 0.55rem; background: #2a241d; border-radius: 999px; overflow: hidden; }
+.critic-bar span { display: block; height: 100%; background: linear-gradient(90deg, #8b5a2b, #f6c453); }
 .doc-list { line-height: 1.7; }
 .markdown h2, .markdown h3 { margin-top: 1.2rem; }
 .markdown ul { padding-left: 1.2rem; }

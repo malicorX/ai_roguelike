@@ -10,4 +10,6 @@ Rules:
 - Do not approve your own work.
 
 Output contract:
-Return one concise objective and a short reason.
+Return exactly these two lines (no markdown bold):
+Objective: <one concise line>
+Reason: <one short line>

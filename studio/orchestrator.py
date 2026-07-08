@@ -110,20 +110,28 @@ def run_pilot_cycle(
     report_path = state_dir / f"cycle-{cycle_number:04d}-report.json"
     proposal_lint_path = state_dir / f"cycle-{cycle_number:04d}-proposal-lint.json"
 
+    _cycle_log(state_dir, cycle_number, "cycle started")
+
     try:
-        director_output = _run_director(
-            repo_root,
-            objective=objective,
-            spec=spec,
-            cycle_number=cycle_number,
-            state_dir=state_dir,
-            director_mode=director_mode,
-            studio_config=studio_config,
-            roles_dir=roles_dir,
-            role_runner=role_runner,
-            role_timeout_seconds=role_timeout_seconds,
-            apply_writes=apply_writes,
-        )
+        existing_director = _read_existing_artifact(director_path)
+        if existing_director is not None and director_mode == DirectorMode.MODEL:
+            _cycle_log(state_dir, cycle_number, "reusing director artifact")
+            director_output = existing_director
+        else:
+            _cycle_log(state_dir, cycle_number, "running director")
+            director_output = _run_director(
+                repo_root,
+                objective=objective,
+                spec=spec,
+                cycle_number=cycle_number,
+                state_dir=state_dir,
+                director_mode=director_mode,
+                studio_config=studio_config,
+                roles_dir=roles_dir,
+                role_runner=role_runner,
+                role_timeout_seconds=role_timeout_seconds,
+                apply_writes=apply_writes,
+            )
     except (TimeoutError, OSError, RuntimeError, ValueError) as exc:
         return _blocked_role_failure_result(
             repo_root,
@@ -145,17 +153,23 @@ def run_pilot_cycle(
 
     selected_objective = _objective_from_director_output(director_output)
     try:
-        designer_output = _run_designer(
-            repo_root,
-            selected_objective,
-            director_output,
-            designer_path=designer_path,
-            director_mode=director_mode,
-            studio_config=studio_config,
-            roles_dir=roles_dir,
-            role_runner=role_runner,
-            role_timeout_seconds=role_timeout_seconds,
-        )
+        existing_designer = _read_existing_artifact(designer_path)
+        if existing_designer is not None and director_mode == DirectorMode.MODEL:
+            _cycle_log(state_dir, cycle_number, "reusing designer artifact")
+            designer_output = existing_designer
+        else:
+            _cycle_log(state_dir, cycle_number, "running designer")
+            designer_output = _run_designer(
+                repo_root,
+                selected_objective,
+                director_output,
+                designer_path=designer_path,
+                director_mode=director_mode,
+                studio_config=studio_config,
+                roles_dir=roles_dir,
+                role_runner=role_runner,
+                role_timeout_seconds=role_timeout_seconds,
+            )
     except (TimeoutError, OSError, RuntimeError, ValueError) as exc:
         return _blocked_role_failure_result(
             repo_root,
@@ -176,18 +190,24 @@ def run_pilot_cycle(
         )
 
     try:
-        builder_output = _run_builder(
-            repo_root,
-            selected_objective,
-            director_output,
-            designer_output,
-            director_mode=director_mode,
-            studio_config=studio_config,
-            roles_dir=roles_dir,
-            role_runner=role_runner,
-            role_timeout_seconds=role_timeout_seconds,
-            apply_writes=apply_writes,
-        )
+        existing_builder = _read_existing_artifact(builder_path)
+        if existing_builder is not None and director_mode == DirectorMode.MODEL:
+            _cycle_log(state_dir, cycle_number, "reusing builder artifact")
+            builder_output = existing_builder
+        else:
+            _cycle_log(state_dir, cycle_number, "running builder")
+            builder_output = _run_builder(
+                repo_root,
+                selected_objective,
+                director_output,
+                designer_output,
+                director_mode=director_mode,
+                studio_config=studio_config,
+                roles_dir=roles_dir,
+                role_runner=role_runner,
+                role_timeout_seconds=role_timeout_seconds,
+                apply_writes=apply_writes,
+            )
     except (TimeoutError, OSError, RuntimeError, ValueError) as exc:
         return _blocked_role_failure_result(
             repo_root,
@@ -235,6 +255,7 @@ def run_pilot_cycle(
         encoding="utf-8",
     )
     if proposal_issues:
+        _cycle_log(state_dir, cycle_number, f"blocked at proposal lint ({len(proposal_issues)} issues)")
         return _blocked_gate_result(
             repo_root,
             state_dir,
@@ -255,7 +276,13 @@ def run_pilot_cycle(
         )
 
     try:
-        reviewer_verdict, reviewer_issues = _run_reviewer(
+        existing_reviewer = _read_existing_reviewer(reviewer_path)
+        if existing_reviewer is not None and director_mode == DirectorMode.MODEL:
+            _cycle_log(state_dir, cycle_number, f"reusing reviewer artifact ({existing_reviewer[0]})")
+            reviewer_verdict, reviewer_issues = existing_reviewer
+        else:
+            _cycle_log(state_dir, cycle_number, "running reviewer")
+            reviewer_verdict, reviewer_issues = _run_reviewer(
             repo_root,
             selected_objective,
             designer_output,
@@ -287,6 +314,7 @@ def run_pilot_cycle(
         )
 
     if reviewer_verdict == "REWORK":
+        _cycle_log(state_dir, cycle_number, "blocked at reviewer gate")
         return _blocked_gate_result(
             repo_root,
             state_dir,
@@ -307,6 +335,7 @@ def run_pilot_cycle(
         )
 
     if apply_writes:
+        _cycle_log(state_dir, cycle_number, "entering write path")
         return _run_write_cycle(
             repo_root,
             state_dir,
@@ -332,6 +361,7 @@ def run_pilot_cycle(
         designer_spec=designer_output,
         models=evaluation_models_string(studio_config),
     )
+    _cycle_log(state_dir, cycle_number, "running sparky2 evaluation")
     report = EvaluationClient(evaluation_target).evaluate(repo_root, request, state_dir, cycle_number)
 
     return PilotCycleResult(
@@ -397,7 +427,27 @@ def next_cycle_number(state_dir: Path) -> int:
             match = re.match(r"cycle-(\d+)-director\.md$", path.name)
             if match:
                 numbers.add(int(match.group(1)))
-    return (max(numbers) + 1) if numbers else 1
+    if not numbers:
+        return 1
+    for number in sorted(numbers):
+        report_path = state_dir / f"cycle-{number:04d}-report.json"
+        if not report_path.is_file():
+            return number
+    return max(numbers) + 1
+
+
+def _cycle_log(state_dir: Path, cycle_number: int, message: str) -> None:
+    print(f"cycle {cycle_number}: {message}", flush=True)
+    log_path = state_dir / f"cycle-{cycle_number:04d}-run.log"
+    with log_path.open("a", encoding="utf-8") as handle:
+        handle.write(message.rstrip() + "\n")
+
+
+def _read_existing_artifact(path: Path) -> str | None:
+    if not path.is_file():
+        return None
+    text = path.read_text(encoding="utf-8").strip()
+    return text or None
 
 
 def main(argv: Sequence[str] | None = None) -> int:
@@ -1312,15 +1362,32 @@ def _looks_like_repo_path(value: str) -> bool:
     return "/" in value or "\\" in value
 
 
+def _read_existing_reviewer(path: Path) -> tuple[str, list[str]] | None:
+    if not path.is_file():
+        return None
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError:
+        return None
+    verdict = str(data.get("verdict", "")).strip()
+    if verdict not in {"PASS", "REWORK"}:
+        return None
+    issues = [str(issue) for issue in data.get("issues", [])]
+    return verdict, issues
+
+
 def _objective_from_director_output(output: str) -> str:
     for line in output.splitlines():
         normalized = line.strip().lstrip("-*").strip()
+        normalized = re.sub(r"^\*\*(.+?)\*\*$", r"\1", normalized)
+        normalized = re.sub(r"\*\*", "", normalized).strip()
         if not normalized:
             continue
-        for prefix in ("Objective:", "Next objective:", "OBJECTIVE:"):
-            if normalized.startswith(prefix):
-                normalized = normalized[len(prefix) :].strip()
-                break
+        lowered = normalized.lower()
+        if lowered.startswith("objective:"):
+            return normalized.split(":", 1)[1].strip()
+        if lowered.startswith("next objective:"):
+            return normalized.split(":", 1)[1].strip()
         return normalized
     return DEFAULT_OBJECTIVE
 

@@ -208,6 +208,7 @@ def _copy_cycle_artifacts(state_dir: Path, artifacts_dir: Path, number: int) -> 
         "report.json",
         "apply.json",
         "merge.json",
+        "run.log",
     ):
         source = state_dir / f"{prefix}-{suffix}"
         if source.is_file():

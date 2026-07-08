@@ -598,10 +598,37 @@ class OrchestratorTest(unittest.TestCase):
         self.assertEqual(exit_code, 0)
         pilot_cycle.assert_not_called()
 
+    def test_next_cycle_number_resumes_first_incomplete_cycle(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            state_dir = Path(tmpdir)
+            (state_dir / "cycle-0003-director.md").write_text("Objective: test\n", encoding="utf-8")
+
+            self.assertEqual(next_cycle_number(state_dir), 3)
+
+    def test_next_cycle_number_advances_after_report_exists(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            state_dir = Path(tmpdir)
+            (state_dir / "cycle-0003-director.md").write_text("Objective: test\n", encoding="utf-8")
+            (state_dir / "cycle-0003-report.json").write_text("{}\n", encoding="utf-8")
+
+            self.assertEqual(next_cycle_number(state_dir), 4)
+
+    def test_objective_from_director_output_strips_markdown_bold(self) -> None:
+        from studio.orchestrator import _objective_from_director_output
+
+        objective = _objective_from_director_output("**Objective:** Add HUD turn counter.\n**Reason:** readability\n")
+
+        self.assertEqual(objective, "Add HUD turn counter.")
+
+    def test_next_cycle_number_starts_at_one_for_empty_state(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            self.assertEqual(next_cycle_number(Path(tmpdir)), 1)
+
     def test_next_cycle_number_starts_after_latest_artifact(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             state_dir = Path(tmpdir)
             (state_dir / "cycle-0003-director.md").write_text("Objective: test\n", encoding="utf-8")
+            (state_dir / "cycle-0003-report.json").write_text("{}\n", encoding="utf-8")
 
             self.assertEqual(next_cycle_number(state_dir), 4)
 
@@ -632,7 +659,7 @@ class OrchestratorTest(unittest.TestCase):
 
         self.assertEqual(exit_code, 0)
         pilot_cycle.assert_called_once()
-        self.assertEqual(pilot_cycle.call_args.kwargs["cycle_number"], 3)
+        self.assertEqual(pilot_cycle.call_args.kwargs["cycle_number"], 2)
 
     def test_write_cycle_blocks_when_builder_output_has_no_diff(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:

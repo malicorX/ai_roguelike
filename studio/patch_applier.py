@@ -63,6 +63,19 @@ def validate_unified_diff(repo_root: Path, diff: str) -> list[str]:
             if old_pattern and _find_subsequence(source_lines, old_pattern) is None:
                 preview = old_pattern[0][:80]
                 issues.append(f"Hunk {hunk_number} context not found in {new_path}: {preview!r}")
+
+    if not issues:
+        check = subprocess.run(
+            ["git", "apply", "--check", "--recount", "--whitespace=nowarn", "-"],
+            cwd=repo_root,
+            input=repaired,
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+        if check.returncode != 0:
+            message = check.stderr.strip() or check.stdout.strip() or "git apply --check failed."
+            issues.append(message)
     return issues
 
 

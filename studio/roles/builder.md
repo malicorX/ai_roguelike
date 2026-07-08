@@ -11,6 +11,7 @@ Rules:
 - In proposal-only pilot mode, do not claim files changed or tests ran.
 - In write mode, return a unified diff in a ```diff fenced block that applies cleanly with git apply.
 - Copy surrounding context lines exactly from the provided source excerpts; do not invent line numbers or code that is not in the excerpts.
+- When editing test files, do not duplicate existing `it("...")` names and ensure the diff ends with balanced braces.
 - Prefer `diff --git a/path b/path` headers and patch the source excerpts provided in context.
 - Prefer one hunk per changed file; do not include future-state context (e.g. imports for symbols the same diff adds later).
 - For NEW files use `--- /dev/null` and `+++ b/path` headers.

@@ -11,6 +11,7 @@ Rules:
 - List in-scope files using only paths from context, or mark new files as NEW.
 - Do not write code, unified diffs, or claim tests were run.
 - Do not expand scope beyond the Director objective.
+- Do not rewrite the Director objective into a verification-only baseline or "make tests green" spec without a concrete code change.
 
 Output contract:
 Return markdown with these sections:

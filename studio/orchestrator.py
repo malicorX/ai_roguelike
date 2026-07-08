@@ -230,6 +230,28 @@ def run_pilot_cycle(
             apply_writes=apply_writes,
         )
 
+    if apply_writes and _is_verification_only_designer_spec(designer_output):
+        issue = "Designer spec is verification-only and does not request a concrete code change."
+        _cycle_log(state_dir, cycle_number, "blocked at designer spec gate")
+        return _blocked_gate_result(
+            repo_root,
+            state_dir,
+            cycle_number=cycle_number,
+            objective=selected_objective,
+            spec=spec,
+            director_path=director_path,
+            designer_path=designer_path,
+            builder_path=builder_path,
+            reviewer_path=reviewer_path,
+            proposal_lint_path=proposal_lint_path,
+            request_path=request_path,
+            report_path=report_path,
+            checks=["designer spec gate"],
+            bugs=[issue],
+            repro_steps=["Rewrite the Designer spec to implement the Director objective with a concrete code change."],
+            blocking_reasons=["Designer spec rejected in write mode.", issue],
+        )
+
     try:
         existing_builder = _read_existing_artifact(builder_path)
         if existing_builder is not None and director_mode == DirectorMode.MODEL:
@@ -1697,6 +1719,28 @@ def _is_verification_only_objective(objective: str) -> bool:
         "baseline playability",
     )
     return any(marker in lowered for marker in markers)
+
+
+def _is_verification_only_designer_spec(text: str) -> bool:
+    lowered = text.lower()
+    strong_markers = (
+        "verification baseline",
+        "establishes a verification",
+        "no new gameplay",
+        "no gameplay mechanics",
+        "no code changes are introduced",
+        "remain unchanged to maintain baseline",
+        "all other files remain unchanged",
+    )
+    if any(marker in lowered for marker in strong_markers):
+        return True
+    soft_markers = (
+        "confirm that compilation",
+        "green test results",
+        "baseline stability",
+        "ensuring existing tests pass",
+    )
+    return sum(marker in lowered for marker in soft_markers) >= 2
 
 
 def _objective_from_director_output(output: str) -> str:

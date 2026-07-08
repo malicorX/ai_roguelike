@@ -941,6 +941,54 @@ class OrchestratorTest(unittest.TestCase):
         self.assertIn("Director picked a verification-only objective in write mode.", result.blocking_reasons)
         self.assertEqual(report_data["qa"]["checks"], ["director objective gate"])
 
+    def test_write_cycle_blocks_verification_only_designer_spec(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            repo = Path(tmpdir)
+            state_dir = repo / "studio" / "state"
+            roles_dir = repo / "studio" / "roles"
+            game = repo / "game"
+            game.mkdir(parents=True)
+            (game / "package.json").write_text(json.dumps({"scripts": {"test": "vitest run"}}), encoding="utf-8")
+            roles_dir.mkdir(parents=True)
+            self._init_git_repo(repo)
+            self._write_success_npm(game)
+
+            def fake_role_runner(*args: object, **_kwargs: object) -> str:
+                role = args[2]
+                if role == "director":
+                    return "Objective: Add combat damage unit test.\nReason: logic coverage."
+                if role == "designer":
+                    return "\n".join(
+                        [
+                            "1. **Summary** — Establish a verification baseline ensuring existing tests pass.",
+                            "2. **Acceptance criteria** — npm test passes.",
+                            "3. **In-scope files** — game/smoke/playable.spec.ts",
+                            "4. **Out of scope** — No new gameplay mechanics.",
+                            "5. **Test plan** — npm test",
+                        ]
+                    )
+                raise AssertionError(f"Unexpected role after designer gate: {role}")
+
+            with patch("studio.orchestrator._git_output") as git_output:
+                git_output.side_effect = ["main", "abc1234", "main", "abc1234"]
+                result = run_pilot_cycle(
+                    repo,
+                    state_dir,
+                    cycle_number=12,
+                    evaluation_target=EvaluationTarget.LOCAL,
+                    director_mode=DirectorMode.MODEL,
+                    studio_config=StudioConfig.from_model_string("director=test-model,builder=test-model,designer=test-model,reviewer=test-model"),
+                    roles_dir=roles_dir,
+                    role_runner=fake_role_runner,
+                    apply_writes=True,
+                )
+
+            report_data = json.loads(result.report_path.read_text(encoding="utf-8"))
+
+        self.assertTrue(result.blocked)
+        self.assertIn("Designer spec rejected in write mode.", result.blocking_reasons)
+        self.assertEqual(report_data["qa"]["checks"], ["designer spec gate"])
+
     def test_builder_role_timeout_writes_blocked_report(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             repo = Path(tmpdir)

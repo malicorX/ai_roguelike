@@ -31,6 +31,37 @@ class OrchestratorTest(unittest.TestCase):
     def _pass_reviewer_output(self) -> str:
         return "PASS"
 
+    def test_director_context_includes_write_mode_and_recent_cycles(self) -> None:
+        from studio.orchestrator import _director_context
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            repo = Path(tmpdir)
+            state_dir = repo / "studio" / "state"
+            state_dir.mkdir(parents=True)
+            (state_dir / "cycle-0001-director.md").write_text(
+                "Objective: Add HUD turn counter.\nReason: readability.\n",
+                encoding="utf-8",
+            )
+            (state_dir / "cycle-0001-reviewer.json").write_text(
+                json.dumps({"verdict": "REWORK", "issues": ["Missing test."]}) + "\n",
+                encoding="utf-8",
+            )
+
+            with patch("studio.orchestrator._git_output") as git_output:
+                git_output.side_effect = ["main", "abc1234"]
+                context = _director_context(
+                    repo,
+                    state_dir,
+                    2,
+                    objective="Fallback objective",
+                    spec="Fallback spec",
+                    apply_writes=True,
+                )
+
+        self.assertIn("write cycle", context.lower())
+        self.assertIn("Cycle 1", context)
+        self.assertIn("reviewer=REWORK", context)
+
     def test_build_evaluation_request_uses_git_identity(self) -> None:
         with patch("studio.orchestrator._git_output") as git_output:
             git_output.side_effect = ["feature/test", "abc1234"]
@@ -521,9 +552,12 @@ class OrchestratorTest(unittest.TestCase):
             repo = Path(tmpdir)
             state_dir = repo / "studio" / "state"
 
-            with patch("studio.orchestrator.run_pilot_cycle") as pilot_cycle:
+            with patch("studio.orchestrator.run_pilot_cycle") as pilot_cycle, patch("studio.orchestrator._finalize_cycle"):
+                state_dir.mkdir(parents=True, exist_ok=True)
                 pilot_cycle.return_value.blocked = False
+                pilot_cycle.return_value.blocking_reasons = []
                 pilot_cycle.return_value.report_path = state_dir / "cycle-0001-report.json"
+                pilot_cycle.return_value.director_path = state_dir / "cycle-0001-director.md"
                 exit_code = main(
                     [
                         "--repo-root",
@@ -578,9 +612,11 @@ class OrchestratorTest(unittest.TestCase):
             state_dir.mkdir(parents=True)
             (state_dir / "cycle-0002-director.md").write_text("Objective: test\n", encoding="utf-8")
 
-            with patch("studio.orchestrator.run_pilot_cycle") as pilot_cycle:
+            with patch("studio.orchestrator.run_pilot_cycle") as pilot_cycle, patch("studio.orchestrator._finalize_cycle"):
                 pilot_cycle.return_value.blocked = False
+                pilot_cycle.return_value.blocking_reasons = []
                 pilot_cycle.return_value.report_path = state_dir / "cycle-0003-report.json"
+                pilot_cycle.return_value.director_path = state_dir / "cycle-0003-director.md"
                 exit_code = main(
                     [
                         "--repo-root",

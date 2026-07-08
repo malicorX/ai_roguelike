@@ -12,6 +12,7 @@ from typing import Callable, Sequence
 
 from eval_lab.protocol import DesignReport, EvaluationReport, EvaluationRequest, QaReport
 from studio.config import StudioConfig, evaluation_models_string
+from studio.cycle_memory import append_backlog_suggestions, append_cycle_record, load_backlog_summary, recent_cycle_summaries
 from studio.evaluation_client import EvaluationClient, EvaluationTarget
 from studio.git_ops import (
     GitOperationError,
@@ -121,6 +122,7 @@ def run_pilot_cycle(
             roles_dir=roles_dir,
             role_runner=role_runner,
             role_timeout_seconds=role_timeout_seconds,
+            apply_writes=apply_writes,
         )
     except (TimeoutError, OSError, RuntimeError, ValueError) as exc:
         return _blocked_role_failure_result(
@@ -460,8 +462,47 @@ def main(argv: Sequence[str] | None = None) -> int:
             flush=True,
         )
         _publish_devlog(args.repo_root, state_dir)
+        _finalize_cycle(args.repo_root, state_dir, cycle_number, pilot_result, apply_writes=args.apply_writes)
 
     return 1 if last_blocked else 0
+
+
+def _finalize_cycle(
+    repo_root: Path,
+    state_dir: Path,
+    cycle_number: int,
+    result: PilotCycleResult,
+    *,
+    apply_writes: bool,
+) -> None:
+    objective = _objective_from_director_output(result.director_path.read_text(encoding="utf-8"))
+    merge_verdict: str | None = None
+    merge_path = state_dir / f"cycle-{cycle_number:04d}-merge.json"
+    if merge_path.is_file():
+        merge_data = json.loads(merge_path.read_text(encoding="utf-8"))
+        merge_verdict = str(merge_data.get("verdict", "")).strip() or None
+    branch = result.branch if isinstance(result.branch, (str, type(None))) else None
+    append_cycle_record(
+        repo_root,
+        cycle_number=cycle_number,
+        objective=objective,
+        blocked=result.blocked,
+        blocking_reasons=result.blocking_reasons,
+        mode="write" if apply_writes else "proposal",
+        merge_verdict=merge_verdict,
+        branch=branch,
+    )
+    if result.blocked or merge_verdict != "MERGED":
+        return
+    if not result.report_path.is_file():
+        return
+    try:
+        report_data = json.loads(result.report_path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError:
+        return
+    suggestions = report_data.get("design", {}).get("backlog_suggestions", [])
+    if isinstance(suggestions, list):
+        append_backlog_suggestions(repo_root, [str(item) for item in suggestions], source_cycle=cycle_number)
 
 
 def _publish_devlog(repo_root: Path, state_dir: Path) -> None:
@@ -816,16 +857,39 @@ def _git_output(repo_root: Path, *args: str) -> str:
     ).strip()
 
 
-def _director_context(repo_root: Path, *, objective: str, spec: str) -> str:
+def _director_context(
+    repo_root: Path,
+    state_dir: Path,
+    cycle_number: int,
+    *,
+    objective: str,
+    spec: str,
+    apply_writes: bool,
+) -> str:
     branch = _git_output(repo_root, "rev-parse", "--abbrev-ref", "HEAD")
     commit = _git_output(repo_root, "rev-parse", "--short", "HEAD")
+    mode_line = (
+        "Phase 1 write cycle: Builder diffs apply on feature branches and merge on green sparky2 evaluation."
+        if apply_writes
+        else "Phase 1 pilot: proposal only — no repository writes are applied."
+    )
     return "\n".join(
         [
             f"Branch: {branch}",
             f"Commit: {commit}",
-            f"Current safe objective: {objective}",
-            f"Current safe spec: {spec}",
-            "Mode: no-write dry-run. Propose the next small objective only; do not request code changes yet.",
+            f"Cycle number: {cycle_number}",
+            f"Mode: {mode_line}",
+            "",
+            "Backlog (latest items):",
+            load_backlog_summary(repo_root),
+            "",
+            "Recent cycle outcomes (avoid repeating blocked objectives):",
+            recent_cycle_summaries(state_dir, before_cycle=cycle_number),
+            "",
+            f"Fallback objective if unsure: {objective}",
+            f"Fallback spec if unsure: {spec}",
+            "",
+            "Pick the next small player-visible or test-visible improvement.",
         ]
     )
 
@@ -842,6 +906,7 @@ def _run_director(
     roles_dir: Path,
     role_runner: RoleRunner,
     role_timeout_seconds: int,
+    apply_writes: bool = False,
 ) -> str:
     if director_mode == DirectorMode.STATIC:
         director_output = f"Objective: {objective}\nReason: {spec}"
@@ -850,7 +915,14 @@ def _run_director(
             studio_config,
             roles_dir,
             "director",
-            _director_context(repo_root, objective=objective, spec=spec),
+            _director_context(
+                repo_root,
+                state_dir,
+                cycle_number,
+                objective=objective,
+                spec=spec,
+                apply_writes=apply_writes,
+            ),
             timeout_seconds=role_timeout_seconds,
         )
     (state_dir / f"cycle-{cycle_number:04d}-director.md").write_text(director_output.rstrip() + "\n", encoding="utf-8")

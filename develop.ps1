@@ -6,7 +6,7 @@ param(
   [string]$DirectorMode = "model",
   [int]$RoleTimeoutSeconds = 600,
   [Alias("Models")]
-  [string]$ModelAssignments = "",
+  [string]$ModelAssignments = "director=hf.co/InternScience/Agents-A1-Q4_K_M-GGUF:latest,designer=hf.co/InternScience/Agents-A1-Q4_K_M-GGUF:latest,builder=hf.co/InternScience/Agents-A1-Q4_K_M-GGUF:latest,reviewer=hf.co/InternScience/Agents-A1-Q4_K_M-GGUF:latest,art_director=hf.co/InternScience/Agents-A1-Q4_K_M-GGUF:latest,player=hf.co/InternScience/Agents-A1-Q4_K_M-GGUF:latest",
   [switch]$FullLoop,
   [switch]$ApplyWrites,
   [switch]$Detached

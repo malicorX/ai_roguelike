@@ -3,7 +3,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from studio.cycle_memory import append_cycle_record, load_backlog_summary, recent_cycle_summaries
+from studio.cycle_memory import append_cycle_record, load_backlog_summary, recent_blocker_notes, recent_cycle_summaries
 
 
 class CycleMemoryTest(unittest.TestCase):
@@ -67,6 +67,23 @@ class CycleMemoryTest(unittest.TestCase):
 
         self.assertEqual(record["cycle"], 4)
         self.assertEqual(record["merge_verdict"], "MERGED")
+
+    def test_recent_blocker_notes_collects_reviewer_issues(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            state_dir = Path(tmpdir)
+            (state_dir / "cycle-0031-reviewer.json").write_text(
+                json.dumps({"verdict": "REWORK", "issues": ["Do not modify main.ts without imports."]}) + "\n",
+                encoding="utf-8",
+            )
+            (state_dir / "cycle-0031-report.json").write_text(
+                json.dumps({"qa": {"verdict": "REWORK", "bugs": []}}) + "\n",
+                encoding="utf-8",
+            )
+
+            notes = recent_blocker_notes(state_dir, before_cycle=32)
+
+        self.assertIn("Cycle 31 reviewer", notes)
+        self.assertIn("main.ts", notes)
 
 
 if __name__ == "__main__":

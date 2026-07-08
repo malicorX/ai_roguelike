@@ -13,7 +13,13 @@ from typing import Callable, Sequence
 
 from eval_lab.protocol import DesignReport, EvaluationReport, EvaluationRequest, QaReport
 from studio.config import StudioConfig, evaluation_models_string
-from studio.cycle_memory import append_backlog_suggestions, append_cycle_record, load_backlog_summary, recent_cycle_summaries
+from studio.cycle_memory import (
+    append_backlog_suggestions,
+    append_cycle_record,
+    load_backlog_summary,
+    recent_blocker_notes,
+    recent_cycle_summaries,
+)
 from studio.duration import parse_duration
 from studio.evaluation_client import EvaluationClient, EvaluationTarget
 from studio.git_ops import (
@@ -200,6 +206,8 @@ def run_pilot_cycle(
             _cycle_log(state_dir, cycle_number, "running builder")
             builder_output = _run_builder(
                 repo_root,
+                state_dir,
+                cycle_number,
                 selected_objective,
                 director_output,
                 designer_output,
@@ -431,14 +439,10 @@ def next_cycle_number(state_dir: Path) -> int:
                 numbers.add(int(match.group(1)))
     if not numbers:
         return 1
-    incomplete = [
-        number
-        for number in sorted(numbers)
-        if not (state_dir / f"cycle-{number:04d}-report.json").is_file()
-    ]
-    if incomplete:
-        return incomplete[-1]
-    return max(numbers) + 1
+    latest = max(numbers)
+    if not (state_dir / f"cycle-{latest:04d}-report.json").is_file():
+        return latest
+    return latest + 1
 
 
 def _cycle_log(state_dir: Path, cycle_number: int, message: str) -> None:
@@ -1073,6 +1077,8 @@ def _run_designer(
 
 def _builder_context(
     repo_root: Path,
+    state_dir: Path,
+    cycle_number: int,
     objective: str,
     director_output: str,
     designer_output: str,
@@ -1099,6 +1105,9 @@ def _builder_context(
         "",
         "Designer spec (implement this only):",
         designer_output.strip(),
+        "",
+        "Recent blockers to avoid:",
+        recent_blocker_notes(state_dir, before_cycle=cycle_number),
         "",
         mode_line,
         "Do not invent paths. Proposed changed files must match the Designer spec or be labeled as NEW.",
@@ -1199,6 +1208,8 @@ def _source_snippets(repo_root: Path, paths: list[str], *, max_lines: int = 50) 
 
 def _run_builder(
     repo_root: Path,
+    state_dir: Path,
+    cycle_number: int,
     objective: str,
     director_output: str,
     designer_output: str,
@@ -1225,6 +1236,8 @@ def _run_builder(
         "builder",
         _builder_context(
             repo_root,
+            state_dir,
+            cycle_number,
             objective,
             director_output,
             designer_output,

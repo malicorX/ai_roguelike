@@ -34,6 +34,38 @@ def recent_cycle_summaries(state_dir: Path, *, before_cycle: int, limit: int = 5
     return "\n".join(reversed(summaries))
 
 
+def recent_blocker_notes(state_dir: Path, *, before_cycle: int, limit: int = 3) -> str:
+    notes: list[str] = []
+    cycles_used = 0
+    for number in range(before_cycle - 1, 0, -1):
+        if cycles_used >= limit:
+            break
+        cycle_notes: list[str] = []
+        reviewer_path = state_dir / f"cycle-{number:04d}-reviewer.json"
+        if reviewer_path.is_file():
+            reviewer = _read_json(reviewer_path)
+            if reviewer.get("verdict") == "REWORK":
+                for issue in reviewer.get("issues", []):
+                    cycle_notes.append(f"Cycle {number} reviewer: {issue}")
+        lint_path = state_dir / f"cycle-{number:04d}-proposal-lint.json"
+        if lint_path.is_file():
+            lint = _read_json(lint_path)
+            if lint.get("verdict") == "REWORK":
+                for issue in lint.get("issues", []):
+                    cycle_notes.append(f"Cycle {number} lint: {issue}")
+        report_path = state_dir / f"cycle-{number:04d}-report.json"
+        if report_path.is_file():
+            report = _read_json(report_path)
+            for bug in report.get("qa", {}).get("bugs", []):
+                cycle_notes.append(f"Cycle {number} qa: {bug}")
+        if cycle_notes:
+            notes.extend(cycle_notes)
+            cycles_used += 1
+    if not notes:
+        return "No recent reviewer or lint blockers recorded."
+    return "\n".join(f"- {note}" for note in notes[:12])
+
+
 def append_cycle_record(
     repo_root: Path,
     *,

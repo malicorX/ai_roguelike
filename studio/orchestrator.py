@@ -487,11 +487,12 @@ def main(argv: Sequence[str] | None = None) -> int:
         flush=True,
     )
     last_blocked = False
-    for offset in range(cycles):
+    completed = 0
+    while completed < cycles:
         if time.monotonic() >= deadline:
             print(f"time budget {args.time} elapsed; exiting before next cycle.", flush=True)
             break
-        cycle_number = start_cycle + offset
+        cycle_number = next_cycle_number(state_dir)
         if (state_dir / "STOP").exists():
             print(f"STOP file found at {state_dir / 'STOP'}; exiting before cycle {cycle_number}.", flush=True)
             break
@@ -508,6 +509,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             last_blocked = dry_result.blocked
             print(f"cycle {cycle_number}: report={dry_result.report_path} blocked={dry_result.blocked}", flush=True)
             _publish_devlog(args.repo_root, state_dir)
+            completed += 1
             continue
 
         pilot_result = run_pilot_cycle(
@@ -530,6 +532,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         )
         _publish_devlog(args.repo_root, state_dir)
         _finalize_cycle(args.repo_root, state_dir, cycle_number, pilot_result, apply_writes=args.apply_writes)
+        completed += 1
 
     return 1 if last_blocked else 0
 

@@ -42,7 +42,7 @@ def validate_write_scope(designer_output: str) -> list[str]:
     return issues
 
 
-def allowed_builder_paths(designer_output: str) -> set[str]:
+def allowed_builder_paths(designer_output: str) -> set[str] | None:
     allowed: set[str] = set()
     primary = primary_implementation_path(designer_output)
     if primary:
@@ -55,4 +55,4 @@ def allowed_builder_paths(designer_output: str) -> set[str]:
             allowed.add(normalized)
     if allowed:
         return allowed
-    return {normalize_repo_path(path) for path in in_scope_paths_from_designer_spec(designer_output)}
+    return None

@@ -101,10 +101,10 @@ def in_scope_paths_from_designer_spec(text: str) -> list[str]:
     for line in text.splitlines():
         stripped = line.strip()
         lowered = stripped.lower()
-        if (lowered.startswith("3.") or lowered.startswith("##")) and "in-scope" in lowered:
+        if _is_in_scope_section_header(lowered):
             in_section = True
             continue
-        if in_section and (lowered.startswith("4.") or (lowered.startswith("##") and "out of scope" in lowered)):
+        if in_section and _is_out_of_scope_section_header(lowered):
             break
         if not in_section:
             continue
@@ -115,6 +115,35 @@ def in_scope_paths_from_designer_spec(text: str) -> list[str]:
                 candidate = normalize_repo_path(candidate.removeprefix("new:").strip())
             if "/" in candidate:
                 paths.append(candidate)
+    if paths:
+        return paths
+    return _fallback_repo_paths_from_designer(text)
+
+
+def _is_in_scope_section_header(lowered: str) -> bool:
+    if "in-scope" not in lowered or "files" not in lowered:
+        return False
+    if lowered.startswith("3."):
+        return True
+    return bool(re.match(r"^#+\s", lowered))
+
+
+def _is_out_of_scope_section_header(lowered: str) -> bool:
+    if "out of scope" not in lowered:
+        return False
+    if lowered.startswith("4."):
+        return True
+    return bool(re.match(r"^#+\s", lowered))
+
+
+def _fallback_repo_paths_from_designer(text: str) -> list[str]:
+    paths: list[str] = []
+    seen: set[str] = set()
+    for match in re.findall(r"`(game/(?:src|smoke|tests)/[^`]+)`", text):
+        candidate = normalize_repo_path(match)
+        if candidate not in seen:
+            seen.add(candidate)
+            paths.append(candidate)
     return paths
 
 

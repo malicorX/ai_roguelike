@@ -102,9 +102,12 @@ class WriteScopeTest(unittest.TestCase):
     def test_validate_write_scope_rejects_mixed_src_and_tests(self) -> None:
         designer = "\n".join(
             [
-                "## In-scope files",
+                "# In-scope files",
                 "- `game/src/engine.ts`",
                 "- `game/tests/enemy_movement.test.ts`",
+                "",
+                "# Out of scope",
+                "- other",
             ]
         )
         issues = validate_write_scope(designer)
@@ -114,7 +117,7 @@ class WriteScopeTest(unittest.TestCase):
     def test_allowed_builder_paths_prefers_primary_implementation_file(self) -> None:
         designer = "\n".join(
             [
-                "## In-scope files",
+                "# In-scope files",
                 "- `game/src/engine.ts`",
             ]
         )

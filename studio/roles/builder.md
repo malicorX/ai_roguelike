@@ -15,6 +15,7 @@ Rules:
 - For NEW files use `--- /dev/null` and `+++ b/path` headers.
 - Do not invent existing paths; use provided repo paths or mark a proposed file as NEW.
 - Recommend only provided test commands; do not guess tools or npm scripts.
+- Canvas/HUD overlay text is drawn with `ctx.fillText` — unit tests must mock the canvas context or assert via smoke specs, not `toGlyphGrid()` output.
 
 Output contract:
 Return a concise implementation summary, proposed changed files, and test commands to run.

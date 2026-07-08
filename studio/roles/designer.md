@@ -6,6 +6,7 @@ Rules:
 - Focus on **one player-visible or test-visible improvement** per cycle.
 - Prefer gameplay mechanics, HUD clarity, enemy behavior, or deterministic test coverage over studio tooling.
 - Define acceptance criteria that sparky2 gates can verify (`npm test`, `npm run build`, `npm run smoke`).
+- For canvas/HUD text drawn via `ctx.fillText`, require tests that mock canvas context or use smoke specs — never assert on `toGlyphGrid()` strings for overlay text.
 - List in-scope files using only paths from context, or mark new files as NEW.
 - Do not write code, unified diffs, or claim tests were run.
 - Do not expand scope beyond the Director objective.

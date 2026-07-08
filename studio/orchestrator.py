@@ -173,6 +173,8 @@ def run_pilot_cycle(
             _cycle_log(state_dir, cycle_number, "running designer")
             designer_output = _run_designer(
                 repo_root,
+                state_dir,
+                cycle_number,
                 selected_objective,
                 director_output,
                 designer_path=designer_path,
@@ -1040,7 +1042,13 @@ def _run_director(
     return director_output
 
 
-def _designer_context(repo_root: Path, objective: str, director_output: str) -> str:
+def _designer_context(
+    repo_root: Path,
+    state_dir: Path,
+    cycle_number: int,
+    objective: str,
+    director_output: str,
+) -> str:
     file_summary = "\n".join(f"- {path}" for path in _known_repo_files(repo_root))
     command_summary = "\n".join(f"- {command}" for command in _known_test_commands(repo_root))
     return "\n".join(
@@ -1050,7 +1058,11 @@ def _designer_context(repo_root: Path, objective: str, director_output: str) -> 
             "Director output:",
             director_output.strip(),
             "",
+            "Recent blockers to avoid:",
+            recent_blocker_notes(state_dir, before_cycle=cycle_number),
+            "",
             "Write a Designer spec only. No code, no diffs.",
+            "Canvas HUD/overlay text uses ctx.fillText — do not specify toGlyphGrid() string checks for overlay text.",
             "",
             "Known existing paths:",
             file_summary,
@@ -1063,6 +1075,8 @@ def _designer_context(repo_root: Path, objective: str, director_output: str) -> 
 
 def _run_designer(
     repo_root: Path,
+    state_dir: Path,
+    cycle_number: int,
     objective: str,
     director_output: str,
     *,
@@ -1100,7 +1114,7 @@ def _run_designer(
             studio_config,
             roles_dir,
             "designer",
-            _designer_context(repo_root, objective, director_output),
+            _designer_context(repo_root, state_dir, cycle_number, objective, director_output),
             timeout_seconds=role_timeout_seconds,
         )
     designer_path.write_text(designer_output.rstrip() + "\n", encoding="utf-8")

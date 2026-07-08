@@ -431,10 +431,13 @@ def next_cycle_number(state_dir: Path) -> int:
                 numbers.add(int(match.group(1)))
     if not numbers:
         return 1
-    for number in sorted(numbers):
-        report_path = state_dir / f"cycle-{number:04d}-report.json"
-        if not report_path.is_file():
-            return number
+    incomplete = [
+        number
+        for number in sorted(numbers)
+        if not (state_dir / f"cycle-{number:04d}-report.json").is_file()
+    ]
+    if incomplete:
+        return incomplete[-1]
     return max(numbers) + 1
 
 

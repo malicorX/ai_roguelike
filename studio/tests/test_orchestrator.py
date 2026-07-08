@@ -620,6 +620,16 @@ class OrchestratorTest(unittest.TestCase):
         self.assertEqual(exit_code, 0)
         pilot_cycle.assert_not_called()
 
+    def test_next_cycle_number_resumes_latest_incomplete_cycle(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            state_dir = Path(tmpdir)
+            (state_dir / "cycle-0010-director.md").write_text("Objective: old\n", encoding="utf-8")
+            (state_dir / "cycle-0030-director.md").write_text("Objective: recent\n", encoding="utf-8")
+            (state_dir / "cycle-0031-director.md").write_text("Objective: done\n", encoding="utf-8")
+            (state_dir / "cycle-0031-report.json").write_text("{}\n", encoding="utf-8")
+
+            self.assertEqual(next_cycle_number(state_dir), 30)
+
     def test_next_cycle_number_resumes_first_incomplete_cycle(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             state_dir = Path(tmpdir)

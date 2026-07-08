@@ -853,8 +853,55 @@ class OrchestratorTest(unittest.TestCase):
             report_data = json.loads(result.report_path.read_text(encoding="utf-8"))
 
         self.assertTrue(result.blocked)
-        self.assertIn("Builder diff validation failed.", result.blocking_reasons)
+        self.assertIn("Builder output did not include a unified diff fenced block.", result.blocking_reasons)
         self.assertEqual(report_data["qa"]["verdict"], "REWORK")
+        self.assertEqual(report_data["qa"]["checks"], ["builder role"])
+
+    def test_write_cycle_blocks_when_builder_output_is_empty(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            repo = Path(tmpdir)
+            state_dir = repo / "studio" / "state"
+            roles_dir = repo / "studio" / "roles"
+            game = repo / "game"
+            src = game / "src"
+            src.mkdir(parents=True)
+            (game / "package.json").write_text(json.dumps({"scripts": {"test": "vitest run"}}), encoding="utf-8")
+            (src / "render.ts").write_text("export {};\n", encoding="utf-8")
+            roles_dir.mkdir(parents=True)
+            self._init_git_repo(repo)
+            self._write_success_npm(game)
+
+            def fake_role_runner(*args: object, **_kwargs: object) -> str:
+                role = args[2]
+                if role == "director":
+                    return "Objective: Add HUD turn counter."
+                if role == "designer":
+                    return self._default_designer_output()
+                if role == "builder":
+                    return "   "
+                if role == "reviewer":
+                    return self._pass_reviewer_output()
+                raise AssertionError(f"Unexpected role: {role}")
+
+            with patch("studio.orchestrator._git_output") as git_output:
+                git_output.side_effect = ["main", "abc1234", "main", "abc1234"]
+                result = run_pilot_cycle(
+                    repo,
+                    state_dir,
+                    cycle_number=10,
+                    evaluation_target=EvaluationTarget.LOCAL,
+                    director_mode=DirectorMode.MODEL,
+                    studio_config=StudioConfig.from_model_string("director=test-model,builder=test-model,designer=test-model,reviewer=test-model"),
+                    roles_dir=roles_dir,
+                    role_runner=fake_role_runner,
+                    apply_writes=True,
+                )
+
+            report_data = json.loads(result.report_path.read_text(encoding="utf-8"))
+
+        self.assertTrue(result.blocked)
+        self.assertIn("Builder returned empty output in write mode.", result.blocking_reasons)
+        self.assertEqual(report_data["qa"]["checks"], ["builder role"])
 
     def test_builder_role_timeout_writes_blocked_report(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:

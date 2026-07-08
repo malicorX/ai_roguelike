@@ -250,6 +250,28 @@ def run_pilot_cycle(
         )
     builder_path.write_text(builder_output.rstrip() + "\n", encoding="utf-8")
 
+    if apply_writes:
+        builder_write_issue = _builder_write_mode_issue(builder_output)
+        if builder_write_issue is not None:
+            _cycle_log(state_dir, cycle_number, f"blocked at builder output ({builder_write_issue})")
+            return _blocked_role_failure_result(
+                repo_root,
+                state_dir,
+                cycle_number=cycle_number,
+                objective=selected_objective,
+                spec=spec,
+                role="builder",
+                error=builder_write_issue,
+                director_path=director_path,
+                designer_path=designer_path,
+                builder_path=builder_path,
+                reviewer_path=reviewer_path,
+                proposal_lint_path=proposal_lint_path,
+                request_path=request_path,
+                report_path=report_path,
+                apply_writes=apply_writes,
+            )
+
     pilot_spec = "\n".join(
         [
             "Phase 1 pilot: no repository writes are applied by the orchestrator yet."
@@ -1193,11 +1215,14 @@ def _builder_context(
         if apply_writes
         else "Mode: Phase 1 pilot. Return an implementation proposal only; do not claim files were changed."
     )
-    extra_rules = (
-        "The unified diff must use git-style headers (diff --git or --- a/... +++ b/...) and apply cleanly to the source excerpts below. Do not invent class structures that are not in the excerpts."
-        if apply_writes
-        else "Do not claim tests were run. You may recommend test commands to run later."
-    )
+    if apply_writes:
+        extra_rules = (
+            "The unified diff must use git-style headers (diff --git or --- a/... +++ b/...) and apply cleanly to the source excerpts below. "
+            "Do not invent class structures that are not in the excerpts. "
+            "REQUIRED: include a non-empty ```diff fenced block with a git-style unified diff. Empty responses are rejected."
+        )
+    else:
+        extra_rules = "Do not claim tests were run. You may recommend test commands to run later."
     parts = [
         f"Selected objective: {objective}",
         "",
@@ -1348,21 +1373,42 @@ def _run_builder(
                 f"Objective considered: {objective}",
             ]
         )
-    return role_runner(
+    context = _builder_context(
+        repo_root,
+        state_dir,
+        cycle_number,
+        objective,
+        director_output,
+        designer_output,
+        apply_writes=apply_writes,
+    )
+    output = role_runner(
         studio_config,
         roles_dir,
         "builder",
-        _builder_context(
-            repo_root,
-            state_dir,
-            cycle_number,
-            objective,
-            director_output,
-            designer_output,
-            apply_writes=apply_writes,
-        ),
+        context,
         timeout_seconds=role_timeout_seconds,
     )
+    if apply_writes and _builder_write_mode_issue(output) is not None:
+        output = role_runner(
+            studio_config,
+            roles_dir,
+            "builder",
+            context
+            + "\n\nYour previous response was rejected because write mode requires a non-empty ```diff fenced block with a unified diff. Try again.",
+            timeout_seconds=role_timeout_seconds,
+        )
+    return output
+
+
+def _builder_write_mode_issue(builder_output: str) -> str | None:
+    if not builder_output.strip():
+        return "Builder returned empty output in write mode."
+    try:
+        extract_unified_diff(builder_output)
+    except PatchExtractError as exc:
+        return str(exc)
+    return None
 
 
 def _builder_repo_files(repo_root: Path, designer_output: str) -> list[str]:

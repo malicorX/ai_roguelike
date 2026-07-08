@@ -21,3 +21,4 @@ Rules:
 
 Output contract:
 Return a concise implementation summary, proposed changed files, and test commands to run.
+In write mode, always end with a ```diff fenced block containing the unified diff.

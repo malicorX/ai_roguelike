@@ -1166,15 +1166,8 @@ def _builder_context(
         command_summary,
     ]
     if apply_writes:
-        snippets = _source_snippets(
-            repo_root,
-            [
-                "game/src/engine.ts",
-                "game/src/main.ts",
-                "game/src/testHarness.ts",
-                "game/tests/engine.test.ts",
-            ],
-        )
+        snippet_paths = _builder_repo_files(repo_root, designer_output)[:8]
+        snippets = _source_snippets(repo_root, snippet_paths)
         if snippets:
             parts.extend(["", "Current source excerpts (diffs must apply to this code, not invented classes):", snippets])
     return "\n".join(parts)

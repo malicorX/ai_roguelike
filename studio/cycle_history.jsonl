@@ -1,0 +1,1 @@
+{"cycle": 51, "objective": "Add unit test verifying game state structure remains valid after player initialization.", "mode": "write", "blocked": true, "blocking_reasons": ["Builder diff validation failed.", "Hunk 1 context not found in game/tests/engine.test.ts: '            expect(defeated.log).toContain(\"enemy-1 dies.\");'"]}

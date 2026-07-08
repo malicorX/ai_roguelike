@@ -6,6 +6,7 @@ from pathlib import Path
 from studio.patch_applier import (
     PatchApplyError,
     PatchExtractError,
+    _validate_test_strict_null_access,
     apply_unified_diff,
     diff_paths,
     extract_unified_diff,
@@ -215,6 +216,28 @@ npm test
 """
             issues = validate_unified_diff(repo, diff)
             self.assertTrue(issues)
+
+    def test_validate_test_strict_null_access_flags_unsafe_index_property(self) -> None:
+        diff = """--- a/game/tests/engine.test.ts
++++ b/game/tests/engine.test.ts
+@@ -1,3 +1,6 @@
++  it("bad", () => {
++    expect(game.enemies[0].hp).toBe(1);
++  });
+"""
+        issues = _validate_test_strict_null_access(diff)
+        self.assertEqual(len(issues), 1)
+        self.assertIn("tsc --noEmit", issues[0])
+
+    def test_validate_test_strict_null_access_allows_non_null_assertion(self) -> None:
+        diff = """--- a/game/tests/engine.test.ts
++++ b/game/tests/engine.test.ts
+@@ -1,3 +1,6 @@
++  it("ok", () => {
++    expect(game.enemies[0]!.hp).toBe(1);
++  });
+"""
+        self.assertEqual(_validate_test_strict_null_access(diff), [])
 
     def test_validate_unified_diff_accepts_matching_context(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:

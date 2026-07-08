@@ -68,6 +68,7 @@ def validate_unified_diff(repo_root: Path, diff: str) -> list[str]:
                 issues.append(f"Hunk {hunk_number} context not found in {new_path}: {preview!r}")
 
     issues.extend(_validate_added_imports(repo_root, repaired))
+    issues.extend(_validate_test_strict_null_access(repaired))
 
     if not issues:
         check = subprocess.run(
@@ -81,6 +82,33 @@ def validate_unified_diff(repo_root: Path, diff: str) -> list[str]:
         if check.returncode != 0:
             message = check.stderr.strip() or check.stdout.strip() or "git apply --check failed."
             issues.append(message)
+    return issues
+
+
+def _validate_test_strict_null_access(diff: str) -> list[str]:
+    issues: list[str] = []
+    seen: set[str] = set()
+    current_test = False
+    index_property = re.compile(r"\[[0-9]+\]\.[A-Za-z_$]")
+    for line in diff.splitlines():
+        if line.startswith("+++ "):
+            path = _diff_path_from_header(line)
+            current_test = path.endswith(".test.ts")
+            continue
+        if not current_test or not line.startswith("+") or line.startswith("+++"):
+            continue
+        content = line[1:]
+        if not index_property.search(content):
+            continue
+        if "]!." in content or "]!)." in content or "?." in content:
+            continue
+        issue = (
+            "Test addition uses array[index].property without non-null assertion ([index]!) "
+            "or optional chaining; npm run build (tsc --noEmit) will fail."
+        )
+        if issue not in seen:
+            seen.add(issue)
+            issues.append(issue)
     return issues
 
 

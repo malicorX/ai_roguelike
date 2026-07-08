@@ -13,6 +13,7 @@ Rules:
 - Output exactly one complete ```diff block. Do not include draft diffs, self-corrections, or commentary inside the fence.
 - Copy surrounding context lines exactly from the provided source excerpts; do not invent line numbers or code that is not in the excerpts.
 - When editing test files, do not duplicate existing `it("...")` names and ensure the diff ends with balanced braces.
+- TypeScript tests must pass `tsc --noEmit` (`npm run build`): use `array[index]!.property` or optional chaining when indexing into arrays before property access.
 - Prefer `diff --git a/path b/path` headers and patch the source excerpts provided in context.
 - Prefer one hunk per changed file; do not include future-state context (e.g. imports for symbols the same diff adds later).
 - For NEW files use `--- /dev/null` and `+++ b/path` headers.

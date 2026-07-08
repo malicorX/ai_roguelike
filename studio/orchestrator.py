@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import re
 import subprocess
 import sys
@@ -828,6 +829,26 @@ def _run_write_cycle(
             report_path=report_path,
             reasons=[str(exc)],
             checks=["builder diff apply"],
+        )
+
+    local_build_issues = _run_local_game_build_gate(repo_root)
+    if local_build_issues:
+        if branch is not None:
+            discard_branch(repo_root, branch)
+        return _blocked_write_result(
+            repo_root,
+            state_dir,
+            cycle_number=cycle_number,
+            objective=objective,
+            spec=spec,
+            builder_output=builder_output,
+            director_path=director_path,
+            builder_path=builder_path,
+            proposal_lint_path=proposal_lint_path,
+            request_path=request_path,
+            report_path=report_path,
+            reasons=local_build_issues,
+            checks=["local npm run build"],
         )
 
     write_spec = "\n".join(
@@ -1726,6 +1747,25 @@ def _read_existing_reviewer(path: Path) -> tuple[str, list[str]] | None:
         return None
     issues = [str(issue) for issue in data.get("issues", [])]
     return verdict, issues
+
+
+def _run_local_game_build_gate(repo_root: Path) -> list[str]:
+    game_dir = repo_root / "game"
+    if not (game_dir / "package.json").is_file() or not (game_dir / "node_modules").is_dir():
+        return []
+    executable = "npm.cmd" if os.name == "nt" else "npm"
+    result = subprocess.run(
+        [executable, "run", "build"],
+        cwd=game_dir,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if result.returncode == 0:
+        return []
+    output = (result.stderr or result.stdout).strip()
+    tail = " | ".join(line.strip() for line in output.splitlines()[-3:] if line.strip())
+    return [f"Local npm run build failed after apply: {tail or 'non-zero exit'}"]
 
 
 def _suggested_write_objective(state_dir: Path, *, before_cycle: int) -> str | None:

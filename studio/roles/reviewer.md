@@ -7,6 +7,7 @@ Rules:
 - Block diffs that invent paths, change unrelated files, or exceed scope.
 - Block write-mode diffs that look hallucinated (wrong types, invented classes, bad hunk context).
 - Reject diffs whose removed/context lines are not present in the provided source excerpts.
+- Reject test diffs that access `array[index].property` without `!` or `?.`; sparky2 `npm run build` will fail with TS2532.
 - Prioritize concrete bugs and missing tests over style.
 - Require tests when gameplay behavior changes.
 

@@ -1099,6 +1099,17 @@ class OrchestratorTest(unittest.TestCase):
         self.assertEqual(merge_data["verdict"], "MERGED")
         self.assertIn("play-updated", render_source)
 
+    def test_run_local_game_build_gate_skips_without_node_modules(self) -> None:
+        from studio.orchestrator import _run_local_game_build_gate
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            repo = Path(tmpdir)
+            game = repo / "game"
+            game.mkdir()
+            (game / "package.json").write_text(json.dumps({"scripts": {"build": "tsc"}}), encoding="utf-8")
+
+            self.assertEqual(_run_local_game_build_gate(repo), [])
+
     def _init_git_repo(self, repo: Path) -> None:
         import subprocess
 

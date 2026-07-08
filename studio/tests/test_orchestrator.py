@@ -10,6 +10,27 @@ from studio.orchestrator import DirectorMode, build_evaluation_request, main, ne
 
 
 class OrchestratorTest(unittest.TestCase):
+    def _default_designer_output(self) -> str:
+        return "\n".join(
+            [
+                "## Summary",
+                "Implement the director objective within known paths.",
+                "",
+                "## Acceptance criteria",
+                "1. Existing npm test and smoke gates remain green.",
+                "2. Change matches the objective.",
+                "",
+                "## In-scope files",
+                "- `game/src/main.ts`",
+                "",
+                "## Test plan",
+                "- npm test",
+            ]
+        )
+
+    def _pass_reviewer_output(self) -> str:
+        return "PASS"
+
     def test_build_evaluation_request_uses_git_identity(self) -> None:
         with patch("studio.orchestrator._git_output") as git_output:
             git_output.side_effect = ["feature/test", "abc1234"]
@@ -104,9 +125,13 @@ class OrchestratorTest(unittest.TestCase):
                 role = args[2]
                 if role == "director":
                     return "Objective: Add a visible restart affordance.\nReason: death recovery should be obvious."
+                if role == "designer":
+                    return self._default_designer_output()
                 if role == "builder":
                     builder_contexts.append(str(args[3]))
                     return "Implementation summary: no-write pilot proposal.\nChanged files: none.\nTests: not run by builder."
+                if role == "reviewer":
+                    return self._pass_reviewer_output()
                 raise AssertionError(f"Unexpected role: {role}")
 
             with patch("studio.orchestrator._git_output") as git_output:
@@ -117,7 +142,7 @@ class OrchestratorTest(unittest.TestCase):
                     cycle_number=3,
                     evaluation_target=EvaluationTarget.LOCAL,
                     director_mode=DirectorMode.MODEL,
-                    studio_config=StudioConfig.from_model_string("director=test-model,builder=test-model"),
+                    studio_config=StudioConfig.from_model_string("director=test-model,builder=test-model,designer=test-model,reviewer=test-model"),
                     roles_dir=roles_dir,
                     role_runner=fake_role_runner,
                 )
@@ -136,6 +161,63 @@ class OrchestratorTest(unittest.TestCase):
         self.assertIn("Do not claim tests were run", builder_contexts[0])
         self.assertIn("npm test", builder_contexts[0])
         self.assertIn("npm run smoke", builder_contexts[0])
+        self.assertIn("Designer spec", builder_contexts[0])
+
+    def test_pilot_cycle_blocks_reviewer_rework_before_evaluation(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            repo = Path(tmpdir)
+            state_dir = repo / "studio" / "state"
+            roles_dir = repo / "studio" / "roles"
+            game = repo / "game"
+            src = game / "src"
+            src.mkdir(parents=True)
+            (src / "render.ts").write_text("export {};\n", encoding="utf-8")
+            (game / "package.json").write_text(json.dumps({"scripts": {"test": "vitest run"}}), encoding="utf-8")
+            roles_dir.mkdir(parents=True)
+            self._write_success_npm(game)
+
+            def fake_role_runner(*args: object, **_kwargs: object) -> str:
+                role = args[2]
+                if role == "director":
+                    return "Objective: Add HUD turn counter."
+                if role == "designer":
+                    return self._default_designer_output()
+                if role == "builder":
+                    return "\n".join(
+                        [
+                            "Implementation summary: add turn counter.",
+                            "Proposed changed files:",
+                            "- `game/src/render.ts`",
+                            "Recommended Test Commands:",
+                            "- `npm test`",
+                        ]
+                    )
+                if role == "reviewer":
+                    return "REWORK\n1. Builder did not address acceptance criterion 2."
+                raise AssertionError(f"Unexpected role: {role}")
+
+            with patch("studio.orchestrator._git_output") as git_output, patch("studio.orchestrator.EvaluationClient") as evaluation_client:
+                git_output.side_effect = ["main", "abc1234", "main", "abc1234"]
+                result = run_pilot_cycle(
+                    repo,
+                    state_dir,
+                    cycle_number=12,
+                    evaluation_target=EvaluationTarget.LOCAL,
+                    director_mode=DirectorMode.MODEL,
+                    studio_config=StudioConfig.from_model_string("director=test-model,builder=test-model,designer=test-model,reviewer=test-model"),
+                    roles_dir=roles_dir,
+                    role_runner=fake_role_runner,
+                )
+
+            reviewer_data = json.loads((state_dir / "cycle-0012-reviewer.json").read_text(encoding="utf-8"))
+            report_data = json.loads(result.report_path.read_text(encoding="utf-8"))
+
+        self.assertTrue(result.blocked)
+        self.assertIn("Reviewer requested rework.", result.blocking_reasons)
+        self.assertEqual(reviewer_data["verdict"], "REWORK")
+        self.assertEqual(report_data["qa"]["verdict"], "REWORK")
+        self.assertEqual(report_data["qa"]["checks"], ["reviewer gate"])
+        evaluation_client.assert_not_called()
 
     def test_pilot_cycle_blocks_invalid_builder_proposal_before_evaluation(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -151,6 +233,8 @@ class OrchestratorTest(unittest.TestCase):
                 role = args[2]
                 if role == "director":
                     return "Objective: Improve movement observability."
+                if role == "designer":
+                    return self._default_designer_output()
                 if role == "builder":
                     return "\n".join(
                         [
@@ -161,6 +245,8 @@ class OrchestratorTest(unittest.TestCase):
                             "npm test",
                         ]
                     )
+                if role == "reviewer":
+                    return self._pass_reviewer_output()
                 raise AssertionError(f"Unexpected role: {role}")
 
             with patch("studio.orchestrator._git_output") as git_output, patch("studio.orchestrator.EvaluationClient") as evaluation_client:
@@ -171,7 +257,7 @@ class OrchestratorTest(unittest.TestCase):
                     cycle_number=5,
                     evaluation_target=EvaluationTarget.LOCAL,
                     director_mode=DirectorMode.MODEL,
-                    studio_config=StudioConfig.from_model_string("director=test-model,builder=test-model"),
+                    studio_config=StudioConfig.from_model_string("director=test-model,builder=test-model,designer=test-model,reviewer=test-model"),
                     roles_dir=roles_dir,
                     role_runner=fake_role_runner,
                 )
@@ -205,6 +291,8 @@ class OrchestratorTest(unittest.TestCase):
                 role = args[2]
                 if role == "director":
                     return "Objective: Add movement observability."
+                if role == "designer":
+                    return self._default_designer_output()
                 if role == "builder":
                     return "\n".join(
                         [
@@ -215,6 +303,8 @@ class OrchestratorTest(unittest.TestCase):
                             "- `npm test -- game/tests/engine.test.ts`",
                         ]
                     )
+                if role == "reviewer":
+                    return self._pass_reviewer_output()
                 raise AssertionError(f"Unexpected role: {role}")
 
             with patch("studio.orchestrator._git_output") as git_output:
@@ -225,7 +315,7 @@ class OrchestratorTest(unittest.TestCase):
                     cycle_number=6,
                     evaluation_target=EvaluationTarget.LOCAL,
                     director_mode=DirectorMode.MODEL,
-                    studio_config=StudioConfig.from_model_string("director=test-model,builder=test-model"),
+                    studio_config=StudioConfig.from_model_string("director=test-model,builder=test-model,designer=test-model,reviewer=test-model"),
                     roles_dir=roles_dir,
                     role_runner=fake_role_runner,
                 )
@@ -258,6 +348,8 @@ class OrchestratorTest(unittest.TestCase):
                 role = args[2]
                 if role == "director":
                     return "Objective: Improve smoke failure logging."
+                if role == "designer":
+                    return self._default_designer_output()
                 if role == "builder":
                     return "\n".join(
                         [
@@ -269,6 +361,8 @@ class OrchestratorTest(unittest.TestCase):
                             "- `npm test`",
                         ]
                     )
+                if role == "reviewer":
+                    return self._pass_reviewer_output()
                 raise AssertionError(f"Unexpected role: {role}")
 
             with patch("studio.orchestrator._git_output") as git_output:
@@ -279,7 +373,7 @@ class OrchestratorTest(unittest.TestCase):
                     cycle_number=8,
                     evaluation_target=EvaluationTarget.LOCAL,
                     director_mode=DirectorMode.MODEL,
-                    studio_config=StudioConfig.from_model_string("director=test-model,builder=test-model"),
+                    studio_config=StudioConfig.from_model_string("director=test-model,builder=test-model,designer=test-model,reviewer=test-model"),
                     roles_dir=roles_dir,
                     role_runner=fake_role_runner,
                 )
@@ -306,6 +400,8 @@ class OrchestratorTest(unittest.TestCase):
                 role = args[2]
                 if role == "director":
                     return "Objective: Add canvas render smoke."
+                if role == "designer":
+                    return self._default_designer_output()
                 if role == "builder":
                     return "\n".join(
                         [
@@ -317,6 +413,8 @@ class OrchestratorTest(unittest.TestCase):
                             "- `npm run smoke`",
                         ]
                     )
+                if role == "reviewer":
+                    return self._pass_reviewer_output()
                 raise AssertionError(f"Unexpected role: {role}")
 
             with patch("studio.orchestrator._git_output") as git_output:
@@ -327,7 +425,7 @@ class OrchestratorTest(unittest.TestCase):
                     cycle_number=11,
                     evaluation_target=EvaluationTarget.LOCAL,
                     director_mode=DirectorMode.MODEL,
-                    studio_config=StudioConfig.from_model_string("director=test-model,builder=test-model"),
+                    studio_config=StudioConfig.from_model_string("director=test-model,builder=test-model,designer=test-model,reviewer=test-model"),
                     roles_dir=roles_dir,
                     role_runner=fake_role_runner,
                 )
@@ -354,6 +452,8 @@ class OrchestratorTest(unittest.TestCase):
                 role = args[2]
                 if role == "director":
                     return "Objective: Add debug overlay proposal."
+                if role == "designer":
+                    return self._default_designer_output()
                 if role == "builder":
                     return "\n".join(
                         [
@@ -365,6 +465,8 @@ class OrchestratorTest(unittest.TestCase):
                             "npm run test:smoke --game/smoke/visual-readability.spec.ts",
                         ]
                     )
+                if role == "reviewer":
+                    return self._pass_reviewer_output()
                 raise AssertionError(f"Unexpected role: {role}")
 
             with patch("studio.orchestrator._git_output") as git_output, patch("studio.orchestrator.EvaluationClient") as evaluation_client:
@@ -375,7 +477,7 @@ class OrchestratorTest(unittest.TestCase):
                     cycle_number=7,
                     evaluation_target=EvaluationTarget.LOCAL,
                     director_mode=DirectorMode.MODEL,
-                    studio_config=StudioConfig.from_model_string("director=test-model,builder=test-model"),
+                    studio_config=StudioConfig.from_model_string("director=test-model,builder=test-model,designer=test-model,reviewer=test-model"),
                     roles_dir=roles_dir,
                     role_runner=fake_role_runner,
                 )
@@ -514,8 +616,12 @@ class OrchestratorTest(unittest.TestCase):
                 role = args[2]
                 if role == "director":
                     return "Objective: Add HUD turn counter."
+                if role == "designer":
+                    return self._default_designer_output()
                 if role == "builder":
                     return "Implementation summary: forgot the diff."
+                if role == "reviewer":
+                    return self._pass_reviewer_output()
                 raise AssertionError(f"Unexpected role: {role}")
 
             with patch("studio.orchestrator._git_output") as git_output:
@@ -526,7 +632,7 @@ class OrchestratorTest(unittest.TestCase):
                     cycle_number=9,
                     evaluation_target=EvaluationTarget.LOCAL,
                     director_mode=DirectorMode.MODEL,
-                    studio_config=StudioConfig.from_model_string("director=test-model,builder=test-model"),
+                    studio_config=StudioConfig.from_model_string("director=test-model,builder=test-model,designer=test-model,reviewer=test-model"),
                     roles_dir=roles_dir,
                     role_runner=fake_role_runner,
                     apply_writes=True,
@@ -553,6 +659,8 @@ class OrchestratorTest(unittest.TestCase):
                 role = args[2]
                 if role == "director":
                     return "Objective: Add movement bounds test."
+                if role == "designer":
+                    return self._default_designer_output()
                 if role == "builder":
                     raise TimeoutError("timed out")
                 raise AssertionError(f"Unexpected role: {role}")
@@ -565,7 +673,7 @@ class OrchestratorTest(unittest.TestCase):
                     cycle_number=10,
                     evaluation_target=EvaluationTarget.LOCAL,
                     director_mode=DirectorMode.MODEL,
-                    studio_config=StudioConfig.from_model_string("director=test-model,builder=test-model"),
+                    studio_config=StudioConfig.from_model_string("director=test-model,builder=test-model,designer=test-model,reviewer=test-model"),
                     roles_dir=roles_dir,
                     role_runner=fake_role_runner,
                     apply_writes=True,
@@ -611,8 +719,12 @@ class OrchestratorTest(unittest.TestCase):
                 role = args[2]
                 if role == "director":
                     return "Objective: Update render label."
+                if role == "designer":
+                    return self._default_designer_output()
                 if role == "builder":
                     return builder_output
+                if role == "reviewer":
+                    return self._pass_reviewer_output()
                 raise AssertionError(f"Unexpected role: {role}")
 
             with patch("studio.orchestrator._git_output") as git_output, patch("studio.orchestrator.push_main"), patch(
@@ -627,7 +739,7 @@ class OrchestratorTest(unittest.TestCase):
                     cycle_number=10,
                     evaluation_target=EvaluationTarget.LOCAL,
                     director_mode=DirectorMode.MODEL,
-                    studio_config=StudioConfig.from_model_string("director=test-model,builder=test-model"),
+                    studio_config=StudioConfig.from_model_string("director=test-model,builder=test-model,designer=test-model,reviewer=test-model"),
                     roles_dir=roles_dir,
                     role_runner=fake_role_runner,
                     apply_writes=True,

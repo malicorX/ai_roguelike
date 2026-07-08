@@ -18,7 +18,9 @@ class CycleRecord:
     branch: str
     commit: str
     director: str
+    designer: str
     builder: str
+    reviewer: dict[str, Any]
     proposal_lint: dict[str, Any]
     request: dict[str, Any]
     report: dict[str, Any]
@@ -27,6 +29,7 @@ class CycleRecord:
     blocked: bool
     blocking_reasons: list[str]
     mode: str
+    roles_run: list[str]
 
 
 @dataclass(frozen=True)
@@ -109,7 +112,9 @@ def _discover_cycle_numbers(state_dir: Path) -> set[int]:
 def _load_cycle(state_dir: Path, number: int) -> CycleRecord:
     prefix = f"cycle-{number:04d}"
     director = _read_text(state_dir / f"{prefix}-director.md")
+    designer = _read_text(state_dir / f"{prefix}-designer.md")
     builder = _read_text(state_dir / f"{prefix}-builder.md")
+    reviewer = _read_json(state_dir / f"{prefix}-reviewer.json")
     proposal_lint = _read_json(state_dir / f"{prefix}-proposal-lint.json")
     request = _read_json(state_dir / f"{prefix}-request.json")
     report = _read_json(state_dir / f"{prefix}-report.json")
@@ -117,14 +122,17 @@ def _load_cycle(state_dir: Path, number: int) -> CycleRecord:
     merge = _read_json(state_dir / f"{prefix}-merge.json")
     objective = str(request.get("objective") or _objective_from_director(director))
     mode = "write" if apply or merge or "write cycle" in str(request.get("spec", "")).lower() else "proposal"
-    blocked, reasons = _cycle_status(proposal_lint, report, apply=apply, merge=merge)
+    blocked, reasons = _cycle_status(proposal_lint, report, reviewer=reviewer, apply=apply, merge=merge)
+    roles_run = _roles_run(director, designer, builder, reviewer, report)
     return CycleRecord(
         number=number,
         objective=objective,
         branch=str(merge.get("branch") or apply.get("branch") or request.get("branch", "unknown")),
         commit=str(merge.get("commit") or apply.get("commit") or request.get("commit", "unknown")),
         director=director,
+        designer=designer,
         builder=builder,
+        reviewer=reviewer,
         proposal_lint=proposal_lint,
         request=request,
         report=report,
@@ -133,13 +141,36 @@ def _load_cycle(state_dir: Path, number: int) -> CycleRecord:
         blocked=blocked,
         blocking_reasons=reasons,
         mode=mode,
+        roles_run=roles_run,
     )
+
+
+def _roles_run(
+    director: str,
+    designer: str,
+    builder: str,
+    reviewer: dict[str, Any],
+    report: dict[str, Any],
+) -> list[str]:
+    roles: list[str] = []
+    if director.strip():
+        roles.append("director")
+    if designer.strip():
+        roles.append("designer")
+    if builder.strip():
+        roles.append("builder")
+    if reviewer.get("verdict"):
+        roles.append(f"reviewer:{reviewer.get('verdict')}")
+    if report:
+        roles.append("tester")
+    return roles
 
 
 def _cycle_status(
     proposal_lint: dict[str, Any],
     report: dict[str, Any],
     *,
+    reviewer: dict[str, Any] | None = None,
     apply: dict[str, Any] | None = None,
     merge: dict[str, Any] | None = None,
 ) -> tuple[bool, list[str]]:
@@ -147,6 +178,9 @@ def _cycle_status(
     if proposal_lint.get("verdict") == "REWORK":
         reasons.append("Builder proposal lint failed.")
         reasons.extend(str(issue) for issue in proposal_lint.get("issues", []))
+    if reviewer and reviewer.get("verdict") == "REWORK":
+        reasons.append("Reviewer requested rework.")
+        reasons.extend(str(issue) for issue in reviewer.get("issues", []))
     if not report:
         reasons.append("Evaluation report missing.")
         return True, reasons
@@ -166,7 +200,9 @@ def _copy_cycle_artifacts(state_dir: Path, artifacts_dir: Path, number: int) -> 
     prefix = f"cycle-{number:04d}"
     for suffix in (
         "director.md",
+        "designer.md",
         "builder.md",
+        "reviewer.json",
         "proposal-lint.json",
         "request.json",
         "report.json",
@@ -188,6 +224,7 @@ def _render_devlog_index(cycles: list[CycleRecord]) -> str:
             f"<td><a href=\"./cycle-{cycle.number:04d}.html\">Cycle {cycle.number}</a></td>"
             f"<td><span class=\"status {status}\">{status}</span></td>"
             f"<td>{_esc(cycle.mode)}</td>"
+            f"<td class=\"phase-cell roles\">{_esc(', '.join(cycle.roles_run))}</td>"
             f"<td class=\"phase-cell\">{_esc(phases.sparky1)}</td>"
             f"<td class=\"phase-cell handoff\">{_esc(phases.handoff)}</td>"
             f"<td class=\"phase-cell\">{_esc(phases.sparky2)}</td>"
@@ -195,7 +232,7 @@ def _render_devlog_index(cycles: list[CycleRecord]) -> str:
             f"<td><code>{_esc(cycle.branch)}@{_esc(cycle.commit)}</code></td>"
             "</tr>"
         )
-    body = "\n".join(rows) if rows else "<tr><td colspan=\"8\">No studio cycles recorded yet.</td></tr>"
+    body = "\n".join(rows) if rows else "<tr><td colspan=\"9\">No studio cycles recorded yet.</td></tr>"
     return _page_shell(
         title="ai_roguelike devlog",
         active_nav="devlog",
@@ -226,7 +263,7 @@ def _render_devlog_index(cycles: list[CycleRecord]) -> str:
   <h2>Latest cycles</h2>
   <table>
     <thead>
-      <tr><th>Cycle</th><th>Status</th><th>Mode</th><th>sparky1</th><th>Handoff</th><th>sparky2</th><th>Objective</th><th>Git</th></tr>
+      <tr><th>Cycle</th><th>Status</th><th>Mode</th><th>Roles</th><th>sparky1</th><th>Handoff</th><th>sparky2</th><th>Objective</th><th>Git</th></tr>
     </thead>
     <tbody>
       {body}
@@ -237,7 +274,9 @@ def _render_devlog_index(cycles: list[CycleRecord]) -> str:
   <h2>How to read a cycle</h2>
   <ol>
     <li><strong>sparky1 · Director</strong> — chooses the objective.</li>
-    <li><strong>sparky1 · Builder</strong> — proposal-only diff, or applied patch in write mode.</li>
+    <li><strong>sparky1 · Designer</strong> — writes acceptance criteria and in-scope files (soul: <code>roles/designer.md</code>).</li>
+    <li><strong>sparky1 · Builder</strong> — proposal or unified diff from the Designer spec only.</li>
+    <li><strong>sparky1 · Reviewer</strong> — PASS/REWORK gate before apply or sparky2 (soul: <code>roles/reviewer.md</code>).</li>
     <li><strong>sparky1 · Proposal lint</strong> — blocks invented paths and unknown test commands.</li>
     <li><strong>sparky1 · Write path</strong> (optional) — apply diff on a feature branch, merge to <code>main</code> only after sparky2 passes.</li>
     <li><strong>Handoff</strong> — <code>request.json</code> copied to sparky2 (and branch pushed when not on <code>main</code>).</li>
@@ -260,8 +299,13 @@ def _cycle_phases(cycle: CycleRecord) -> CyclePhases:
     sparky1_parts: list[str] = []
     if cycle.director.strip():
         sparky1_parts.append("Director")
+    if cycle.designer.strip():
+        sparky1_parts.append("Designer")
     if cycle.builder.strip():
         sparky1_parts.append("Builder")
+    reviewer_verdict = str(cycle.reviewer.get("verdict", "")).strip()
+    if reviewer_verdict:
+        sparky1_parts.append(f"Reviewer {reviewer_verdict}")
     lint_verdict = str(cycle.proposal_lint.get("verdict", "")).strip()
     if lint_verdict:
         sparky1_parts.append(f"Lint {lint_verdict}")
@@ -353,9 +397,22 @@ def _render_cycle_page(cycle: CycleRecord) -> str:
     <p><a href="./artifacts/cycle-{cycle.number:04d}-director.md">raw artifact</a></p>
   </article>
   <article class="panel">
+    <h3>sparky1 · Designer spec</h3>
+    <pre>{_esc(cycle.designer) if cycle.designer.strip() else "—"}</pre>
+    <p><a href="./artifacts/cycle-{cycle.number:04d}-designer.md">raw artifact</a></p>
+  </article>
+</section>
+<section class="grid two">
+  <article class="panel">
     <h3>sparky1 · Builder proposal</h3>
     <pre>{_esc(cycle.builder)}</pre>
     <p><a href="./artifacts/cycle-{cycle.number:04d}-builder.md">raw artifact</a></p>
+  </article>
+  <article class="panel">
+    <h3>sparky1 · Reviewer gate</h3>
+    <p>Verdict: <strong>{_esc(str(cycle.reviewer.get("verdict", "unknown")))}</strong></p>
+    {"<ul>" + "".join(f"<li>{_esc(str(issue))}</li>" for issue in cycle.reviewer.get("issues", [])) + "</ul>" if cycle.reviewer.get("issues") else "<p>No reviewer issues.</p>" if cycle.reviewer.get("verdict") else "<p>Reviewer did not run.</p>"}
+    <p><a href="./artifacts/cycle-{cycle.number:04d}-reviewer.json">raw artifact</a></p>
   </article>
 </section>
 <section class="grid two">

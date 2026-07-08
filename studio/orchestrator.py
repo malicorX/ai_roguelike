@@ -98,7 +98,9 @@ def run_pilot_cycle(
     studio_config = studio_config or StudioConfig()
     roles_dir = roles_dir or repo_root / "studio" / "roles"
     director_path = state_dir / f"cycle-{cycle_number:04d}-director.md"
+    designer_path = state_dir / f"cycle-{cycle_number:04d}-designer.md"
     builder_path = state_dir / f"cycle-{cycle_number:04d}-builder.md"
+    reviewer_path = state_dir / f"cycle-{cycle_number:04d}-reviewer.json"
     request_path = state_dir / f"cycle-{cycle_number:04d}-request.json"
     report_path = state_dir / f"cycle-{cycle_number:04d}-report.json"
     proposal_lint_path = state_dir / f"cycle-{cycle_number:04d}-proposal-lint.json"
@@ -126,7 +128,9 @@ def run_pilot_cycle(
             role="director",
             error=str(exc),
             director_path=director_path,
+            designer_path=designer_path,
             builder_path=builder_path,
+            reviewer_path=reviewer_path,
             proposal_lint_path=proposal_lint_path,
             request_path=request_path,
             report_path=report_path,
@@ -135,10 +139,42 @@ def run_pilot_cycle(
 
     selected_objective = _objective_from_director_output(director_output)
     try:
+        designer_output = _run_designer(
+            repo_root,
+            selected_objective,
+            director_output,
+            designer_path=designer_path,
+            director_mode=director_mode,
+            studio_config=studio_config,
+            roles_dir=roles_dir,
+            role_runner=role_runner,
+            role_timeout_seconds=role_timeout_seconds,
+        )
+    except (TimeoutError, OSError, RuntimeError, ValueError) as exc:
+        return _blocked_role_failure_result(
+            repo_root,
+            state_dir,
+            cycle_number=cycle_number,
+            objective=selected_objective,
+            spec=spec,
+            role="designer",
+            error=str(exc),
+            director_path=director_path,
+            designer_path=designer_path,
+            builder_path=builder_path,
+            reviewer_path=reviewer_path,
+            proposal_lint_path=proposal_lint_path,
+            request_path=request_path,
+            report_path=report_path,
+            apply_writes=apply_writes,
+        )
+
+    try:
         builder_output = _run_builder(
             repo_root,
             selected_objective,
             director_output,
+            designer_output,
             director_mode=director_mode,
             studio_config=studio_config,
             roles_dir=roles_dir,
@@ -156,7 +192,9 @@ def run_pilot_cycle(
             role="builder",
             error=str(exc),
             director_path=director_path,
+            designer_path=designer_path,
             builder_path=builder_path,
+            reviewer_path=reviewer_path,
             proposal_lint_path=proposal_lint_path,
             request_path=request_path,
             report_path=report_path,
@@ -170,6 +208,9 @@ def run_pilot_cycle(
             if not apply_writes
             else "Phase 1 write cycle: repository changes may be applied on a feature branch after proposal lint passes.",
             spec,
+            "",
+            "Designer spec:",
+            designer_output.strip(),
             "",
             "Builder proposal:",
             builder_output.strip(),
@@ -188,31 +229,75 @@ def run_pilot_cycle(
         encoding="utf-8",
     )
     if proposal_issues:
-        request = build_evaluation_request(repo_root, objective=selected_objective, spec=pilot_spec)
-        request_path.write_text(json.dumps(request.to_dict(), indent=2) + "\n", encoding="utf-8")
-        report = EvaluationReport(
-            request_branch=request.branch,
-            request_commit=request.commit,
-            qa=QaReport(
-                verdict="REWORK",
-                checks=["builder proposal lint"],
-                bugs=proposal_issues,
-                repro_steps=["Review the Builder proposal artifact and regenerate it with real repo paths and proposal-only wording."],
-            ),
-            design=DesignReport(
-                verdict="BACKLOG",
-                backlog_suggestions=["Keep proposal lint green before enabling repository-writing Builder cycles."],
-            ),
-        )
-        report_path.write_text(json.dumps(report.to_dict(), indent=2) + "\n", encoding="utf-8")
-        return PilotCycleResult(
-            director_path=state_dir / f"cycle-{cycle_number:04d}-director.md",
+        return _blocked_gate_result(
+            repo_root,
+            state_dir,
+            cycle_number=cycle_number,
+            objective=selected_objective,
+            spec=pilot_spec,
+            director_path=director_path,
+            designer_path=designer_path,
             builder_path=builder_path,
+            reviewer_path=reviewer_path,
             proposal_lint_path=proposal_lint_path,
             request_path=request_path,
             report_path=report_path,
-            blocked=True,
-            blocking_reasons=["Builder proposal lint failed.", *report.blocking_reasons()],
+            checks=["builder proposal lint"],
+            bugs=proposal_issues,
+            repro_steps=["Review the Builder proposal artifact and regenerate it with real repo paths and proposal-only wording."],
+            blocking_reasons=["Builder proposal lint failed.", *proposal_issues],
+        )
+
+    try:
+        reviewer_verdict, reviewer_issues = _run_reviewer(
+            repo_root,
+            selected_objective,
+            designer_output,
+            builder_output,
+            reviewer_path=reviewer_path,
+            director_mode=director_mode,
+            studio_config=studio_config,
+            roles_dir=roles_dir,
+            role_runner=role_runner,
+            role_timeout_seconds=role_timeout_seconds,
+        )
+    except (TimeoutError, OSError, RuntimeError, ValueError) as exc:
+        return _blocked_role_failure_result(
+            repo_root,
+            state_dir,
+            cycle_number=cycle_number,
+            objective=selected_objective,
+            spec=spec,
+            role="reviewer",
+            error=str(exc),
+            director_path=director_path,
+            designer_path=designer_path,
+            builder_path=builder_path,
+            reviewer_path=reviewer_path,
+            proposal_lint_path=proposal_lint_path,
+            request_path=request_path,
+            report_path=report_path,
+            apply_writes=apply_writes,
+        )
+
+    if reviewer_verdict == "REWORK":
+        return _blocked_gate_result(
+            repo_root,
+            state_dir,
+            cycle_number=cycle_number,
+            objective=selected_objective,
+            spec=pilot_spec,
+            director_path=director_path,
+            designer_path=designer_path,
+            builder_path=builder_path,
+            reviewer_path=reviewer_path,
+            proposal_lint_path=proposal_lint_path,
+            request_path=request_path,
+            report_path=report_path,
+            checks=["reviewer gate"],
+            bugs=reviewer_issues,
+            repro_steps=["Revise the Builder output to address Reviewer issues, then rerun the cycle."],
+            blocking_reasons=["Reviewer requested rework.", *reviewer_issues],
         )
 
     if apply_writes:
@@ -222,11 +307,14 @@ def run_pilot_cycle(
             cycle_number=cycle_number,
             objective=selected_objective,
             spec=spec,
+            designer_output=designer_output,
             builder_output=builder_output,
             evaluation_target=evaluation_target,
             deploy=deploy,
-            director_path=state_dir / f"cycle-{cycle_number:04d}-director.md",
+            director_path=director_path,
+            designer_path=designer_path,
             builder_path=builder_path,
+            reviewer_path=reviewer_path,
             proposal_lint_path=proposal_lint_path,
         )
 
@@ -399,11 +487,14 @@ def _run_write_cycle(
     cycle_number: int,
     objective: str,
     spec: str,
+    designer_output: str,
     builder_output: str,
     evaluation_target: EvaluationTarget,
     deploy: bool,
     director_path: Path,
+    designer_path: Path,
     builder_path: Path,
+    reviewer_path: Path,
     proposal_lint_path: Path,
 ) -> PilotCycleResult:
     request_path = state_dir / f"cycle-{cycle_number:04d}-request.json"
@@ -473,6 +564,9 @@ def _run_write_cycle(
             "Phase 1 write cycle: repository changes were applied on a feature branch before evaluation.",
             spec,
             "",
+            "Designer spec:",
+            designer_output.strip(),
+            "",
             "Builder proposal:",
             builder_output.strip(),
         ]
@@ -531,6 +625,53 @@ def _run_write_cycle(
         apply_path=apply_path,
         merge_path=merge_path,
         branch=branch,
+    )
+
+
+def _blocked_gate_result(
+    repo_root: Path,
+    state_dir: Path,
+    *,
+    cycle_number: int,
+    objective: str,
+    spec: str,
+    director_path: Path,
+    designer_path: Path,
+    builder_path: Path,
+    reviewer_path: Path,
+    proposal_lint_path: Path,
+    request_path: Path,
+    report_path: Path,
+    checks: list[str],
+    bugs: list[str],
+    repro_steps: list[str],
+    blocking_reasons: list[str],
+) -> PilotCycleResult:
+    request = build_evaluation_request(repo_root, objective=objective, spec=spec)
+    request_path.write_text(json.dumps(request.to_dict(), indent=2) + "\n", encoding="utf-8")
+    report = EvaluationReport(
+        request_branch=request.branch,
+        request_commit=request.commit,
+        qa=QaReport(
+            verdict="REWORK",
+            checks=checks,
+            bugs=bugs,
+            repro_steps=repro_steps,
+        ),
+        design=DesignReport(
+            verdict="BACKLOG",
+            backlog_suggestions=["Address sparky1 gate failures before sparky2 evaluation."],
+        ),
+    )
+    report_path.write_text(json.dumps(report.to_dict(), indent=2) + "\n", encoding="utf-8")
+    return PilotCycleResult(
+        director_path=director_path,
+        builder_path=builder_path,
+        proposal_lint_path=proposal_lint_path,
+        request_path=request_path,
+        report_path=report_path,
+        blocked=True,
+        blocking_reasons=blocking_reasons,
     )
 
 
@@ -597,14 +738,20 @@ def _blocked_role_failure_result(
     role: str,
     error: str,
     director_path: Path,
+    designer_path: Path,
     builder_path: Path,
+    reviewer_path: Path,
     proposal_lint_path: Path,
     request_path: Path,
     report_path: Path,
     apply_writes: bool,
 ) -> PilotCycleResult:
     if not builder_path.is_file():
-        builder_path.write_text(f"{role.title()} role failed before producing output.\n", encoding="utf-8")
+        builder_path.write_text(f"{role.title()} role failed before Builder output.\n", encoding="utf-8")
+    if not designer_path.is_file() and role in {"builder", "reviewer"}:
+        designer_path.write_text(f"{role.title()} role failed before Designer output.\n", encoding="utf-8")
+    if not reviewer_path.is_file() and role == "reviewer":
+        reviewer_path.write_text(json.dumps({"verdict": "REWORK", "issues": [error]}, indent=2) + "\n", encoding="utf-8")
     proposal_lint_path.write_text(
         json.dumps({"verdict": "REWORK", "issues": [f"{role} role failed: {error}"]}, indent=2) + "\n",
         encoding="utf-8",
@@ -696,7 +843,81 @@ def _run_director(
     return director_output
 
 
-def _builder_context(repo_root: Path, objective: str, director_output: str, *, apply_writes: bool = False) -> str:
+def _designer_context(repo_root: Path, objective: str, director_output: str) -> str:
+    file_summary = "\n".join(f"- {path}" for path in _known_repo_files(repo_root))
+    command_summary = "\n".join(f"- {command}" for command in _known_test_commands(repo_root))
+    return "\n".join(
+        [
+            f"Objective: {objective}",
+            "",
+            "Director output:",
+            director_output.strip(),
+            "",
+            "Write a Designer spec only. No code, no diffs.",
+            "",
+            "Known existing paths:",
+            file_summary,
+            "",
+            "Known test commands:",
+            command_summary,
+        ]
+    )
+
+
+def _run_designer(
+    repo_root: Path,
+    objective: str,
+    director_output: str,
+    *,
+    designer_path: Path,
+    director_mode: DirectorMode,
+    studio_config: StudioConfig,
+    roles_dir: Path,
+    role_runner: RoleRunner,
+    role_timeout_seconds: int,
+) -> str:
+    if director_mode == DirectorMode.STATIC:
+        designer_output = "\n".join(
+            [
+                "## Summary",
+                f"Implement the objective: {objective}",
+                "",
+                "## Acceptance criteria",
+                "1. Existing npm test, build, and smoke gates remain green.",
+                "2. Change is visible in gameplay or covered by a new unit test.",
+                "",
+                "## In-scope files",
+                "- (Builder to choose from known paths)",
+                "",
+                "## Out of scope",
+                "- Studio tooling and refactors unrelated to the objective.",
+                "",
+                "## Test plan",
+                "- npm test",
+                "- npm run build",
+                "- npm run smoke",
+            ]
+        )
+    else:
+        designer_output = role_runner(
+            studio_config,
+            roles_dir,
+            "designer",
+            _designer_context(repo_root, objective, director_output),
+            timeout_seconds=role_timeout_seconds,
+        )
+    designer_path.write_text(designer_output.rstrip() + "\n", encoding="utf-8")
+    return designer_output
+
+
+def _builder_context(
+    repo_root: Path,
+    objective: str,
+    director_output: str,
+    designer_output: str,
+    *,
+    apply_writes: bool = False,
+) -> str:
     file_summary = "\n".join(f"- {path}" for path in _known_repo_files(repo_root))
     command_summary = "\n".join(f"- {command}" for command in _known_test_commands(repo_root))
     mode_line = (
@@ -710,13 +931,16 @@ def _builder_context(repo_root: Path, objective: str, director_output: str, *, a
         else "Do not claim tests were run. You may recommend test commands to run later."
     )
     parts = [
-            f"Selected objective: {objective}",
+        f"Selected objective: {objective}",
         "",
         "Director output:",
         director_output.strip(),
         "",
+        "Designer spec (implement this only):",
+        designer_output.strip(),
+        "",
         mode_line,
-        "Do not invent paths. Proposed changed files must be listed below, or explicitly labeled as NEW.",
+        "Do not invent paths. Proposed changed files must match the Designer spec or be labeled as NEW.",
         extra_rules,
         "",
         "Known existing paths:",
@@ -740,6 +964,67 @@ def _builder_context(repo_root: Path, objective: str, director_output: str, *, a
     return "\n".join(parts)
 
 
+def _reviewer_context(objective: str, designer_output: str, builder_output: str) -> str:
+    return "\n".join(
+        [
+            f"Objective: {objective}",
+            "",
+            "Designer spec:",
+            designer_output.strip(),
+            "",
+            "Builder output to review:",
+            builder_output.strip(),
+        ]
+    )
+
+
+def _run_reviewer(
+    repo_root: Path,
+    objective: str,
+    designer_output: str,
+    builder_output: str,
+    *,
+    reviewer_path: Path,
+    director_mode: DirectorMode,
+    studio_config: StudioConfig,
+    roles_dir: Path,
+    role_runner: RoleRunner,
+    role_timeout_seconds: int,
+) -> tuple[str, list[str]]:
+    if director_mode == DirectorMode.STATIC:
+        reviewer_output = "PASS"
+    else:
+        reviewer_output = role_runner(
+            studio_config,
+            roles_dir,
+            "reviewer",
+            _reviewer_context(objective, designer_output, builder_output),
+            timeout_seconds=role_timeout_seconds,
+        )
+    verdict, issues = _parse_reviewer_verdict(reviewer_output)
+    reviewer_path.write_text(
+        json.dumps({"verdict": verdict, "issues": issues, "raw": reviewer_output.strip()}, indent=2) + "\n",
+        encoding="utf-8",
+    )
+    return verdict, issues
+
+
+def _parse_reviewer_verdict(output: str) -> tuple[str, list[str]]:
+    stripped = output.strip()
+    upper = stripped.upper()
+    if upper.startswith("PASS") and "REWORK" not in upper.splitlines()[0]:
+        return "PASS", []
+    issues: list[str] = []
+    for line in stripped.splitlines():
+        if re.match(r"^\d+\.\s+", line.strip()):
+            issues.append(line.strip())
+    if "REWORK" in upper:
+        if not issues:
+            issues = [line.strip() for line in stripped.splitlines() if line.strip() and not line.strip().upper().startswith("REWORK")]
+        return "REWORK", issues or [stripped]
+    return "REWORK", [f"Reviewer output must start with PASS or REWORK: {stripped[:240]}"]
+
+
 def _source_snippets(repo_root: Path, paths: list[str], *, max_lines: int = 50) -> str:
     blocks: list[str] = []
     for path in paths:
@@ -755,6 +1040,7 @@ def _run_builder(
     repo_root: Path,
     objective: str,
     director_output: str,
+    designer_output: str,
     *,
     director_mode: DirectorMode,
     studio_config: StudioConfig,
@@ -776,7 +1062,13 @@ def _run_builder(
         studio_config,
         roles_dir,
         "builder",
-        _builder_context(repo_root, objective, director_output, apply_writes=apply_writes),
+        _builder_context(
+            repo_root,
+            objective,
+            director_output,
+            designer_output,
+            apply_writes=apply_writes,
+        ),
         timeout_seconds=role_timeout_seconds,
     )
 

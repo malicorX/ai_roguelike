@@ -39,7 +39,7 @@ export function createGame({ seed }: { seed: number }): GameState {
     seed,
     turn: 0,
     map: createRoomMap(12, 8),
-    player: { id: "player", x: 2, y: 2, hp: 10, attack: 3 },
+    player: { id: "player", x: 2, y: 2, hp: 15, attack: 3 },
     enemies: [{ id: "enemy-1", x: 7, y: 4, hp: 6, attack: 2 }],
     log: ["You enter the dungeon."],
     diagnostics: [],

@@ -47,6 +47,28 @@ class ChurnGuardsTest(unittest.TestCase):
             self.assertEqual(consecutive_test_only_merges(state_dir, before_cycle=69), 1)
             self.assertTrue(requires_src_change(state_dir, before_cycle=69))
 
+    def test_requires_src_change_ignores_studio_paths_in_apply_artifact(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            state_dir = Path(tmpdir)
+            (state_dir / "cycle-0070-merge.json").write_text(
+                json.dumps({"verdict": "MERGED"}) + "\n",
+                encoding="utf-8",
+            )
+            (state_dir / "cycle-0070-apply.json").write_text(
+                json.dumps(
+                    {
+                        "changed_files": [
+                            "game/tests/engine.test.ts",
+                            "studio/cycle_history.jsonl",
+                            "studio/backlog.jsonl",
+                        ]
+                    }
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            self.assertTrue(requires_src_change(state_dir, before_cycle=71))
+
     def _write_merge(self, state_dir: Path, cycle_number: int, changed_files: list[str]) -> None:
         prefix = f"cycle-{cycle_number:04d}"
         (state_dir / f"{prefix}-merge.json").write_text(

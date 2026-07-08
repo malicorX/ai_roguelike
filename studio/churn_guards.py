@@ -25,19 +25,24 @@ def normalize_repo_path(path: str) -> str:
     return path.replace("\\", "/").strip().lstrip("./")
 
 
+def game_changed_files(changed_files: list[str]) -> list[str]:
+    return [path for path in changed_files if normalize_repo_path(path).startswith("game/")]
+
+
 def is_src_change(changed_files: list[str]) -> bool:
-    return any(normalize_repo_path(path).startswith("game/src/") for path in changed_files)
+    return any(normalize_repo_path(path).startswith("game/src/") for path in game_changed_files(changed_files))
 
 
 def is_test_only_change(changed_files: list[str]) -> bool:
-    if not changed_files:
+    game_files = game_changed_files(changed_files)
+    if not game_files:
         return False
-    normalized = [normalize_repo_path(path) for path in changed_files]
+    normalized = [normalize_repo_path(path) for path in game_files]
     return all(path.startswith("game/tests/") for path in normalized)
 
 
 def has_player_visible_change(changed_files: list[str]) -> bool:
-    for path in changed_files:
+    for path in game_changed_files(changed_files):
         normalized = normalize_repo_path(path)
         if normalized in PLAYER_VISIBLE_EXCLUDED:
             continue

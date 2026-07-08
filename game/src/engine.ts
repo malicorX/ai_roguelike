@@ -34,6 +34,7 @@ export type MoveAction = {
 export type GameAction = MoveAction;
 
 export function createGame({ seed }: { seed: number }): GameState {
+  console.log(`Map generation seed: ${seed}`);
   return {
     seed,
     turn: 0,

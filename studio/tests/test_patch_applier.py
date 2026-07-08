@@ -30,6 +30,28 @@ diff --git a/readme.txt b/readme.txt
         self.assertIn("diff --git a/readme.txt", diff)
         self.assertEqual(diff_paths(diff), ["readme.txt"])
 
+    def test_extract_unified_diff_prefers_last_fenced_block(self) -> None:
+        text = """Summary
+```diff
+--- a/readme.txt
++++ b/readme.txt
+@@ -1 +1,2 @@
+ hello
++broken
+```
+Draft notes.
+```diff
+--- a/readme.txt
++++ b/readme.txt
+@@ -1 +1,2 @@
+ hello
++world
+```
+"""
+        diff = extract_unified_diff(text)
+        self.assertIn("+world", diff)
+        self.assertNotIn("+broken", diff)
+
     def test_extract_unified_diff_requires_diff_block(self) -> None:
         with self.assertRaises(PatchExtractError):
             extract_unified_diff("Only a proposal without a diff.")

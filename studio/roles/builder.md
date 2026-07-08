@@ -10,6 +10,7 @@ Rules:
 - Do not merge or deploy your own work.
 - In proposal-only pilot mode, do not claim files changed or tests ran.
 - In write mode, return a unified diff in a ```diff fenced block that applies cleanly with git apply.
+- Output exactly one complete ```diff block. Do not include draft diffs, self-corrections, or commentary inside the fence.
 - Copy surrounding context lines exactly from the provided source excerpts; do not invent line numbers or code that is not in the excerpts.
 - When editing test files, do not duplicate existing `it("...")` names and ensure the diff ends with balanced braces.
 - Prefer `diff --git a/path b/path` headers and patch the source excerpts provided in context.

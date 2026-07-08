@@ -14,10 +14,13 @@ class PatchExtractError(RuntimeError):
 
 
 def extract_unified_diff(text: str) -> str:
+    candidates: list[str] = []
     for match in re.finditer(r"```(?:\w+)?\s*\n(.*?)```", text, re.DOTALL | re.IGNORECASE):
         candidate = match.group(1).strip()
         if _looks_like_unified_diff(candidate):
-            return candidate + "\n"
+            candidates.append(candidate)
+    if candidates:
+        return candidates[-1] + "\n"
     stripped = text.strip()
     if _looks_like_unified_diff(stripped):
         return stripped + ("\n" if not stripped.endswith("\n") else "")

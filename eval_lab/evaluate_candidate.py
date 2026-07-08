@@ -8,6 +8,7 @@ import sys
 from pathlib import Path
 from typing import Sequence
 
+from eval_lab.design_review import run_design_review
 from eval_lab.protocol import DesignReport, EvaluationReport, EvaluationRequest, QaReport
 
 
@@ -34,13 +35,7 @@ def evaluate_candidate(repo_root: Path, request: EvaluationRequest) -> Evaluatio
         bugs=bugs,
         repro_steps=repro_steps,
     )
-    design = DesignReport(
-        verdict="BACKLOG",
-        visual_notes=["Automated canvas readability and screenshot baselines passed."] if not bugs else [],
-        backlog_suggestions=[
-            "Add screenshot comparison and longer playthrough scenarios once visual baselines exist.",
-        ],
-    )
+    design = run_design_review(repo_root, request, roles_dir=repo_root / "studio" / "roles", qa_passed=not bugs)
 
     return EvaluationReport(
         request_branch=request.branch,

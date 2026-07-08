@@ -16,6 +16,8 @@ class EvaluationRequest:
     changed_files: list[str] = field(default_factory=list)
     seeds: list[int] = field(default_factory=list)
     focus: list[str] = field(default_factory=list)
+    designer_spec: str = ""
+    models: str = ""
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> EvaluationRequest:
@@ -27,10 +29,12 @@ class EvaluationRequest:
             changed_files=[str(path) for path in data.get("changed_files", [])],
             seeds=[int(seed) for seed in data.get("seeds", [])],
             focus=[str(item) for item in data.get("focus", [])],
+            designer_spec=str(data.get("designer_spec", "")),
+            models=str(data.get("models", "")),
         )
 
     def to_dict(self) -> dict[str, Any]:
-        return {
+        payload: dict[str, Any] = {
             "branch": self.branch,
             "commit": self.commit,
             "objective": self.objective,
@@ -39,6 +43,11 @@ class EvaluationRequest:
             "seeds": list(self.seeds),
             "focus": list(self.focus),
         }
+        if self.designer_spec:
+            payload["designer_spec"] = self.designer_spec
+        if self.models:
+            payload["models"] = self.models
+        return payload
 
 
 @dataclass(frozen=True)
@@ -73,6 +82,7 @@ class DesignReport:
     balance_notes: list[str] = field(default_factory=list)
     visual_notes: list[str] = field(default_factory=list)
     backlog_suggestions: list[str] = field(default_factory=list)
+    evaluation_roles: dict[str, Any] = field(default_factory=dict)
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> DesignReport:
@@ -82,16 +92,20 @@ class DesignReport:
             balance_notes=[str(note) for note in data.get("balance_notes", [])],
             visual_notes=[str(note) for note in data.get("visual_notes", [])],
             backlog_suggestions=[str(item) for item in data.get("backlog_suggestions", [])],
+            evaluation_roles=dict(data.get("evaluation_roles", {})),
         )
 
     def to_dict(self) -> dict[str, Any]:
-        return {
+        payload = {
             "verdict": self.verdict,
             "fun_notes": list(self.fun_notes),
             "balance_notes": list(self.balance_notes),
             "visual_notes": list(self.visual_notes),
             "backlog_suggestions": list(self.backlog_suggestions),
         }
+        if self.evaluation_roles:
+            payload["evaluation_roles"] = dict(self.evaluation_roles)
+        return payload
 
 
 @dataclass(frozen=True)

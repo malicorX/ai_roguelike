@@ -11,7 +11,7 @@ from pathlib import Path
 from typing import Callable, Sequence
 
 from eval_lab.protocol import DesignReport, EvaluationReport, EvaluationRequest, QaReport
-from studio.config import StudioConfig
+from studio.config import StudioConfig, evaluation_models_string
 from studio.evaluation_client import EvaluationClient, EvaluationTarget
 from studio.git_ops import (
     GitOperationError,
@@ -66,6 +66,8 @@ def build_evaluation_request(
     objective: str,
     spec: str,
     changed_files: list[str] | None = None,
+    designer_spec: str = "",
+    models: str = "",
 ) -> EvaluationRequest:
     return EvaluationRequest(
         branch=_git_output(repo_root, "rev-parse", "--abbrev-ref", "HEAD"),
@@ -75,6 +77,8 @@ def build_evaluation_request(
         changed_files=changed_files or [],
         seeds=list(DEFAULT_SEEDS),
         focus=list(DEFAULT_FOCUS),
+        designer_spec=designer_spec,
+        models=models,
     )
 
 
@@ -316,9 +320,16 @@ def run_pilot_cycle(
             builder_path=builder_path,
             reviewer_path=reviewer_path,
             proposal_lint_path=proposal_lint_path,
+            models=evaluation_models_string(studio_config),
         )
 
-    request = build_evaluation_request(repo_root, objective=selected_objective, spec=pilot_spec)
+    request = build_evaluation_request(
+        repo_root,
+        objective=selected_objective,
+        spec=pilot_spec,
+        designer_spec=designer_output,
+        models=evaluation_models_string(studio_config),
+    )
     report = EvaluationClient(evaluation_target).evaluate(repo_root, request, state_dir, cycle_number)
 
     return PilotCycleResult(
@@ -496,6 +507,7 @@ def _run_write_cycle(
     builder_path: Path,
     reviewer_path: Path,
     proposal_lint_path: Path,
+    models: str = "",
 ) -> PilotCycleResult:
     request_path = state_dir / f"cycle-{cycle_number:04d}-request.json"
     report_path = state_dir / f"cycle-{cycle_number:04d}-report.json"
@@ -579,6 +591,8 @@ def _run_write_cycle(
         changed_files=changed_files,
         seeds=list(DEFAULT_SEEDS),
         focus=list(DEFAULT_FOCUS),
+        designer_spec=designer_output,
+        models=models,
     )
     report = EvaluationClient(evaluation_target).evaluate(repo_root, request, state_dir, cycle_number)
 

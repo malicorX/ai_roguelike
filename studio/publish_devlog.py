@@ -245,7 +245,7 @@ def _render_devlog_index(cycles: list[CycleRecord]) -> str:
     <article class="pipeline-lane sparky1">
       <p class="lane-label">sparky1 · development</p>
       <p>Director picks the objective. Builder proposes or writes a diff. Proposal lint and (in write mode) git apply/merge all run on the studio machine.</p>
-      <p class="lane-artifacts">Artifacts: <code>director.md</code>, <code>builder.md</code>, <code>proposal-lint.json</code>, optional <code>apply.json</code> / <code>merge.json</code></p>
+      <p class="lane-artifacts">Artifacts: <code>director.md</code>, <code>designer.md</code>, <code>builder.md</code>, <code>reviewer.json</code>, <code>proposal-lint.json</code>, optional <code>apply.json</code> / <code>merge.json</code></p>
     </article>
     <article class="pipeline-lane handoff">
       <p class="lane-label">handoff · transport</p>
@@ -254,7 +254,7 @@ def _render_devlog_index(cycles: list[CycleRecord]) -> str:
     </article>
     <article class="pipeline-lane sparky2">
       <p class="lane-label">sparky2 · playtesting &amp; gates</p>
-      <p>Checks out the candidate branch/commit, runs <code>npm test</code>, <code>npm run build</code>, <code>npm run smoke</code>, and visual readability checks. Returns QA + design verdicts.</p>
+      <p>Checks out the candidate branch/commit, runs <code>npm test</code>, <code>npm run build</code>, <code>npm run smoke</code>, and optional Art Director / Player roles when configured in <code>--models</code>.</p>
       <p class="lane-artifacts">Artifact: <code>report.json</code></p>
     </article>
   </div>
@@ -280,7 +280,7 @@ def _render_devlog_index(cycles: list[CycleRecord]) -> str:
     <li><strong>sparky1 · Proposal lint</strong> — blocks invented paths and unknown test commands.</li>
     <li><strong>sparky1 · Write path</strong> (optional) — apply diff on a feature branch, merge to <code>main</code> only after sparky2 passes.</li>
     <li><strong>Handoff</strong> — <code>request.json</code> copied to sparky2 (and branch pushed when not on <code>main</code>).</li>
-    <li><strong>sparky2 · Evaluation</strong> — automated unit, build, browser smoke, and visual gates; <code>report.json</code> copied back.</li>
+    <li><strong>sparky2 · Evaluation</strong> — automated unit, build, browser smoke, plus optional Art Director / Player LLM roles; <code>report.json</code> copied back.</li>
   </ol>
   <p>Open a cycle page for the full artifact trail with machine labels on each section.</p>
 </section>
@@ -327,10 +327,21 @@ def _cycle_phases(cycle: CycleRecord) -> CyclePhases:
         qa = cycle.report.get("qa", {})
         qa_verdict = str(qa.get("verdict", "?"))
         checks = qa.get("checks", [])
+        design = cycle.report.get("design", {})
+        design_verdict = str(design.get("verdict", "?"))
+        eval_roles = design.get("evaluation_roles", {})
+        role_bits: list[str] = []
+        if isinstance(eval_roles, dict):
+            for role_name, payload in eval_roles.items():
+                if isinstance(payload, dict) and payload.get("verdict"):
+                    role_bits.append(f"{role_name} {payload['verdict']}")
+                elif role_name in {"art_director", "player"}:
+                    role_bits.append(role_name)
+        role_suffix = f" ({', '.join(role_bits)})" if role_bits else ""
         if checks:
-            sparky2 = f"QA {qa_verdict}: {', '.join(str(check) for check in checks)}"
+            sparky2 = f"QA {qa_verdict}: {', '.join(str(check) for check in checks)} · Design {design_verdict}{role_suffix}"
         else:
-            sparky2 = f"QA {qa_verdict}"
+            sparky2 = f"QA {qa_verdict} · Design {design_verdict}{role_suffix}"
     elif cycle.request and not cycle.blocking_reasons:
         sparky2 = "Awaiting report"
     else:

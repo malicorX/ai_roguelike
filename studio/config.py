@@ -19,6 +19,15 @@ class StudioConfig:
     def from_model_string(cls, models: str) -> StudioConfig:
         return cls(model_assignments=parse_model_assignments(models))
 
+    @classmethod
+    def for_evaluation(cls, models: str, *, base_url: str | None = None) -> StudioConfig:
+        import os
+
+        return cls(
+            model_assignments=parse_model_assignments(models),
+            evaluator_base_url=base_url or os.environ.get("EVAL_OLLAMA_URL", "http://127.0.0.1:11435"),
+        )
+
     def model_for(self, role: str) -> str:
         return self.model_assignments.get(role, DEFAULT_MODEL)
 
@@ -41,3 +50,11 @@ def parse_model_assignments(raw: str) -> dict[str, str]:
             raise ValueError(f"Malformed model assignment: {entry!r}")
         assignments[role] = model
     return assignments
+
+
+def evaluation_models_string(config: StudioConfig) -> str:
+    return ",".join(
+        f"{role}={config.model_assignments[role]}"
+        for role in sorted(config.model_assignments)
+        if role in EVALUATION_ROLES
+    )

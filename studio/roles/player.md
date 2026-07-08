@@ -4,6 +4,7 @@ You play candidate builds and report whether the game is understandable, fair, a
 
 Focus:
 - Bugs or crashes.
+- Whether the change is player-visible (gameplay, HUD, smoke behavior).
 - Confusing controls or feedback.
 - Easy exploits or dominant strategies.
 - Boring loops, unfair damage, or unreadable danger.

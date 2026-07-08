@@ -13,7 +13,17 @@ from pathlib import Path
 from typing import Callable, Sequence
 
 from eval_lab.protocol import DesignReport, EvaluationReport, EvaluationRequest, QaReport
+from studio.churn_guards import (
+    changed_files_for_cycle,
+    churn_director_notes,
+    has_player_visible_change,
+    is_test_only_designer_spec,
+    is_test_only_objective,
+    mandatory_gameplay_objective,
+    requires_src_change,
+)
 from studio.config import StudioConfig, evaluation_models_string
+from studio.cycle_critic import load_latest_critic_constraint, run_cycle_critic, write_cycle_critic
 from studio.cycle_memory import (
     append_backlog_suggestions,
     append_cycle_record,
@@ -171,6 +181,27 @@ def run_pilot_cycle(
         )
 
     selected_objective = _objective_from_director_output(director_output)
+    if apply_writes and requires_src_change(state_dir, before_cycle=cycle_number) and is_test_only_objective(selected_objective):
+        issue = f"Test-only objective rejected after recent test-only merges: {selected_objective}"
+        _cycle_log(state_dir, cycle_number, "blocked at gameplay churn gate (director)")
+        return _blocked_gate_result(
+            repo_root,
+            state_dir,
+            cycle_number=cycle_number,
+            objective=selected_objective,
+            spec=spec,
+            director_path=director_path,
+            designer_path=designer_path,
+            builder_path=builder_path,
+            reviewer_path=reviewer_path,
+            proposal_lint_path=proposal_lint_path,
+            request_path=request_path,
+            report_path=report_path,
+            checks=["gameplay churn gate"],
+            bugs=[issue],
+            repro_steps=["Pick a player-visible gameplay change under game/src/ or game/smoke/."],
+            blocking_reasons=["Director picked a test-only objective while gameplay churn guard is active.", issue],
+        )
     if apply_writes and _is_verification_only_objective(selected_objective):
         issue = f"Verification-only objective rejected in write mode: {selected_objective}"
         _cycle_log(state_dir, cycle_number, "blocked at director objective gate")
@@ -229,6 +260,28 @@ def run_pilot_cycle(
             request_path=request_path,
             report_path=report_path,
             apply_writes=apply_writes,
+        )
+
+    if apply_writes and requires_src_change(state_dir, before_cycle=cycle_number) and is_test_only_designer_spec(designer_output):
+        issue = "Designer spec is test-only; gameplay churn guard requires a game/src/ or game/smoke/ change."
+        _cycle_log(state_dir, cycle_number, "blocked at gameplay churn gate (designer)")
+        return _blocked_gate_result(
+            repo_root,
+            state_dir,
+            cycle_number=cycle_number,
+            objective=selected_objective,
+            spec=spec,
+            director_path=director_path,
+            designer_path=designer_path,
+            builder_path=builder_path,
+            reviewer_path=reviewer_path,
+            proposal_lint_path=proposal_lint_path,
+            request_path=request_path,
+            report_path=report_path,
+            checks=["gameplay churn gate"],
+            bugs=[issue],
+            repro_steps=["Rewrite the Designer spec to include at least one in-scope file under game/src/ or game/smoke/."],
+            blocking_reasons=["Designer spec rejected by gameplay churn guard.", issue],
         )
 
     if apply_writes and _is_verification_only_designer_spec(designer_output):
@@ -683,6 +736,16 @@ def _finalize_cycle(
         merge_data = json.loads(merge_path.read_text(encoding="utf-8"))
         merge_verdict = str(merge_data.get("verdict", "")).strip() or None
     branch = result.branch if isinstance(result.branch, (str, type(None))) else None
+    changed_files = changed_files_for_cycle(state_dir, cycle_number)
+    critic_report = run_cycle_critic(
+        state_dir,
+        cycle_number=cycle_number,
+        blocked=result.blocked,
+        blocking_reasons=result.blocking_reasons,
+        merge_verdict=merge_verdict,
+        changed_files=changed_files,
+    )
+    write_cycle_critic(state_dir, cycle_number, critic_report)
     append_cycle_record(
         repo_root,
         cycle_number=cycle_number,
@@ -875,6 +938,24 @@ def _run_write_cycle(
         models=models,
     )
     report = EvaluationClient(evaluation_target).evaluate(repo_root, request, state_dir, cycle_number)
+
+    if not has_player_visible_change(changed_files):
+        if branch is not None:
+            discard_branch(repo_root, branch)
+        return PilotCycleResult(
+            director_path=director_path,
+            builder_path=builder_path,
+            proposal_lint_path=proposal_lint_path,
+            request_path=request_path,
+            report_path=report_path,
+            blocked=True,
+            blocking_reasons=[
+                "Player visibility gate blocked merge.",
+                "Changes must touch game/src/engine.ts, game/src/main.ts, game/src/render.ts, or game/smoke/.",
+            ],
+            apply_path=apply_path,
+            branch=branch,
+        )
 
     if report.blocks_merge():
         if branch is not None:
@@ -1118,6 +1199,7 @@ def _director_context(
             "Write-mode rules:",
             "- Objectives must request concrete, small game changes (game/src, game/tests, game/smoke).",
             "- Do not pick verification-only objectives that forbid code changes.",
+            "- After a test-only merge, the next cycle must include a player-visible game/src/ or game/smoke/ change.",
             "- Avoid repeating objectives that recently blocked at reviewer or lint.",
         ]
         if apply_writes
@@ -1140,6 +1222,29 @@ def _director_context(
             "Recent blockers (do not repeat these failure patterns):",
             recent_blocker_notes(state_dir, before_cycle=cycle_number),
             *(
+                [""] + churn_director_notes(state_dir, before_cycle=cycle_number)
+                if churn_director_notes(state_dir, before_cycle=cycle_number)
+                else []
+            ),
+            *(
+                [
+                    "",
+                    "Cycle critic constraint for this cycle:",
+                    constraint,
+                ]
+                if (constraint := load_latest_critic_constraint(state_dir, before_cycle=cycle_number))
+                else []
+            ),
+            *(
+                [
+                    "",
+                    "Mandatory gameplay objective (use unless you have a better player-visible idea):",
+                    mandatory,
+                ]
+                if (mandatory := mandatory_gameplay_objective(state_dir, before_cycle=cycle_number))
+                else []
+            ),
+            *(
                 [
                     "",
                     "Suggested objective after repeated diff failures:",
@@ -1152,7 +1257,7 @@ def _director_context(
             f"Fallback objective if unsure: {objective}",
             f"Fallback spec if unsure: {spec}",
             "",
-            "Pick the next small player-visible or test-visible improvement.",
+            "Pick the next small player-visible gameplay or HUD improvement (not test-only churn).",
         ]
     )
 
@@ -1215,6 +1320,8 @@ def _designer_context(
             "Canvas HUD/overlay text uses ctx.fillText — do not specify toGlyphGrid() string checks for overlay text.",
             "",
             "GameState fields (use these exact names in specs): seed, turn, map, player, enemies, log, diagnostics.",
+            "",
+            "Gameplay churn guard: if recent merges were test-only, in-scope files must include game/src/ or game/smoke/.",
             "",
             "Known existing paths:",
             file_summary,

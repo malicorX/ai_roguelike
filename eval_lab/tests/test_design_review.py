@@ -52,6 +52,23 @@ class DesignReviewTest(unittest.TestCase):
         self.assertEqual(report.verdict, "BLOCK")
         self.assertEqual(report.evaluation_roles["art_director"]["verdict"], "BLOCK")
 
+    def test_run_design_review_blocks_test_only_changed_files(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            repo = Path(tmpdir)
+            request = EvaluationRequest(
+                branch="main",
+                commit="abc1234",
+                objective="Add unit test",
+                spec="Pilot spec",
+                changed_files=["game/tests/player_health.test.ts"],
+                models="player=test-model",
+            )
+
+            report = run_design_review(repo, request, roles_dir=repo / "studio" / "roles", qa_passed=True)
+
+        self.assertEqual(report.verdict, "BLOCK")
+        self.assertIn("player-visible", report.fun_notes[0].lower())
+
     def test_run_design_review_merges_player_json_notes(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             repo = Path(tmpdir)

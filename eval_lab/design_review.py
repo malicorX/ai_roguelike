@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 from eval_lab.protocol import DesignReport, DesignVerdict, EvaluationRequest
+from studio.churn_guards import has_player_visible_change
 from studio.config import StudioConfig
 from studio.role_runner import run_role
 
@@ -23,6 +24,16 @@ def run_design_review(
 ) -> DesignReport:
     if not qa_passed:
         return _default_design_report(qa_passed=False)
+    if request.changed_files and not has_player_visible_change(request.changed_files):
+        return DesignReport(
+            verdict="BLOCK",
+            fun_notes=["No player-visible gameplay or HUD change detected in the candidate diff."],
+            backlog_suggestions=[
+                "Merge blocked: changes must touch game/src/engine.ts, game/src/main.ts, game/src/render.ts, or game/smoke/.",
+                "Test-only changes are allowed during development but cannot merge until paired with a player-visible src change.",
+            ],
+            evaluation_roles={"player_visibility_gate": {"verdict": "BLOCK", "changed_files": list(request.changed_files)}},
+        )
     if not request.models.strip():
         return _default_design_report(qa_passed=True)
 
@@ -143,6 +154,7 @@ def _art_director_context(repo_root: Path, request: EvaluationRequest) -> str:
 
 
 def _player_context(request: EvaluationRequest) -> str:
+    changed_lines = [f"- {path}" for path in request.changed_files] or ["- (none listed)"]
     return "\n".join(
         [
             f"Objective: {request.objective}",
@@ -150,8 +162,12 @@ def _player_context(request: EvaluationRequest) -> str:
             "Designer acceptance criteria:",
             request.designer_spec.strip() or "(not provided)",
             "",
+            "Changed files:",
+            *changed_lines,
+            "",
             "You are reviewing a candidate where automated npm test/build/smoke passed.",
-            "Return JSON: { \"reached\": \"...\", \"deaths\": 0, \"bugs\": [], \"fun_notes\": [], \"balance_notes\": [] }",
+            "Report whether the change is player-visible (gameplay, HUD, or smoke behavior).",
+            'Return JSON: { "reached": "...", "deaths": 0, "bugs": [], "fun_notes": [], "balance_notes": [] }',
         ]
     )
 

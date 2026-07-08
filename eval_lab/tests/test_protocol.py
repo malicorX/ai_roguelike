@@ -60,7 +60,7 @@ class EvaluationProtocolTest(unittest.TestCase):
         )
 
         self.assertTrue(report.blocks_merge())
-        self.assertEqual(report.blocking_reasons(), ["Design report has blocking visual issues."])
+        self.assertEqual(report.blocking_reasons(), ["Design report blocked merge."])
 
     def test_passed_report_round_trips_through_plain_data(self) -> None:
         report = EvaluationReport(

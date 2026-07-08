@@ -8,6 +8,7 @@ Rules:
 - Define acceptance criteria that sparky2 gates can verify (`npm test`, `npm run build`, `npm run smoke`).
 - When changing numeric gameplay constants, modify the existing field (e.g. `hp`) rather than inventing parallel properties.
 - Use exact API and state field names from the repo (e.g. `map`, `enemies`, `log` on `GameState`) — do not invent aliases like `grid`.
+- If gameplay churn guard is active, in-scope files must include at least one path under `game/src/` or `game/smoke/`.
 - For canvas/HUD text drawn via `ctx.fillText`, require tests that mock canvas context or use smoke specs — never assert on `toGlyphGrid()` strings for overlay text.
 - List in-scope files using only paths from context, or mark new files as NEW.
 - Do not write code, unified diffs, or claim tests were run.

@@ -140,7 +140,7 @@ class EvaluationReport:
         if self.qa.verdict == "REWORK":
             reasons.append("QA requested rework.")
         if self.design.verdict == "BLOCK":
-            reasons.append("Design report has blocking visual issues.")
+            reasons.append("Design report blocked merge.")
         return reasons
 
 

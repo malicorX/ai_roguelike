@@ -1214,6 +1214,8 @@ def _designer_context(
             "Write a Designer spec only. No code, no diffs.",
             "Canvas HUD/overlay text uses ctx.fillText — do not specify toGlyphGrid() string checks for overlay text.",
             "",
+            "GameState fields (use these exact names in specs): seed, turn, map, player, enemies, log, diagnostics.",
+            "",
             "Known existing paths:",
             file_summary,
             "",

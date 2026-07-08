@@ -1,5 +1,5 @@
 param(
-  [string]$Time = "30m",
+  [string]$Time = "100h",
   [int]$MaxCycles = 1,
   [string]$Deploy = "false",
   [string]$EvaluationTarget = "sparky2",

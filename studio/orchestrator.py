@@ -5,6 +5,7 @@ import json
 import re
 import subprocess
 import sys
+import time
 from dataclasses import dataclass
 from enum import StrEnum
 from pathlib import Path
@@ -13,6 +14,7 @@ from typing import Callable, Sequence
 from eval_lab.protocol import DesignReport, EvaluationReport, EvaluationRequest, QaReport
 from studio.config import StudioConfig, evaluation_models_string
 from studio.cycle_memory import append_backlog_suggestions, append_cycle_record, load_backlog_summary, recent_cycle_summaries
+from studio.duration import parse_duration
 from studio.evaluation_client import EvaluationClient, EvaluationTarget
 from studio.git_ops import (
     GitOperationError,
@@ -472,8 +474,16 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     cycles = max(1, args.max_cycles)
     start_cycle = next_cycle_number(state_dir)
+    deadline = time.monotonic() + parse_duration(args.time)
+    print(
+        f"orchestrator starting: cycles={cycles} from={start_cycle} time_budget={args.time} apply_writes={args.apply_writes}",
+        flush=True,
+    )
     last_blocked = False
     for offset in range(cycles):
+        if time.monotonic() >= deadline:
+            print(f"time budget {args.time} elapsed; exiting before next cycle.", flush=True)
+            break
         cycle_number = start_cycle + offset
         if (state_dir / "STOP").exists():
             print(f"STOP file found at {state_dir / 'STOP'}; exiting before cycle {cycle_number}.", flush=True)
@@ -1054,7 +1064,7 @@ def _builder_context(
     *,
     apply_writes: bool = False,
 ) -> str:
-    file_summary = "\n".join(f"- {path}" for path in _known_repo_files(repo_root))
+    file_summary = "\n".join(f"- {path}" for path in _builder_repo_files(repo_root, designer_output))
     command_summary = "\n".join(f"- {command}" for command in _known_test_commands(repo_root))
     mode_line = (
         "Mode: Phase 1 write cycle. Return an implementation summary and a unified diff in a ```diff fenced block."
@@ -1209,23 +1219,67 @@ def _run_builder(
     )
 
 
-def _known_repo_files(repo_root: Path) -> list[str]:
-    patterns = [
-        "game/src/**/*.ts",
-        "game/tests/**/*.ts",
-        "game/smoke/**/*.ts",
-        "eval_lab/**/*.py",
-        "studio/**/*.py",
-        "studio/roles/*.md",
-        "*.md",
-        "*.ps1",
+def _builder_repo_files(repo_root: Path, designer_output: str) -> list[str]:
+    scoped = _paths_from_designer_spec(designer_output)
+    defaults = [
+        "game/src/engine.ts",
+        "game/src/main.ts",
+        "game/src/render.ts",
+        "game/src/testHarness.ts",
+        "game/tests/engine.test.ts",
+        "game/smoke/playability.spec.ts",
     ]
+    paths: list[str] = []
+    seen: set[str] = set()
+    for candidate in [*scoped, *defaults, *_known_repo_files(repo_root, scope="game")]:
+        if candidate in seen:
+            continue
+        if (repo_root / candidate).is_file():
+            seen.add(candidate)
+            paths.append(candidate)
+        if len(paths) >= 24:
+            break
+    return paths
+
+
+def _paths_from_designer_spec(designer_output: str) -> list[str]:
+    paths: list[str] = []
+    for match in re.findall(r"`([^`]+)`", designer_output):
+        cleaned = match.strip().removeprefix("NEW:").strip()
+        if cleaned.endswith("/"):
+            continue
+        if _looks_like_repo_path(cleaned):
+            paths.append(cleaned)
+    return paths
+
+
+def _known_repo_files(repo_root: Path, *, scope: str = "all") -> list[str]:
+    if scope == "game":
+        patterns = [
+            "game/src/**/*.ts",
+            "game/tests/**/*.ts",
+            "game/smoke/**/*.ts",
+        ]
+    else:
+        patterns = [
+            "game/src/**/*.ts",
+            "game/tests/**/*.ts",
+            "game/smoke/**/*.ts",
+            "eval_lab/**/*.py",
+            "studio/**/*.py",
+            "studio/roles/*.md",
+            "*.md",
+            "*.ps1",
+        ]
     paths: set[str] = set()
     for pattern in patterns:
         for path in repo_root.glob(pattern):
             if path.is_file() and "studio/state" not in path.as_posix():
                 paths.add(path.relative_to(repo_root).as_posix())
-    return sorted(paths)
+    ordered = sorted(paths)
+    if scope == "all" and len(ordered) > 80:
+        return ordered[:80]
+    return ordered
 
 
 def _lint_builder_proposal(repo_root: Path, builder_output: str) -> list[str]:

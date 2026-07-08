@@ -1118,6 +1118,15 @@ def _director_context(
             "",
             "Recent blockers (do not repeat these failure patterns):",
             recent_blocker_notes(state_dir, before_cycle=cycle_number),
+            *(
+                [
+                    "",
+                    "Suggested objective after repeated diff failures:",
+                    suggestion,
+                ]
+                if (suggestion := _suggested_write_objective(state_dir, before_cycle=cycle_number))
+                else []
+            ),
             "",
             f"Fallback objective if unsure: {objective}",
             f"Fallback spec if unsure: {spec}",
@@ -1717,6 +1726,16 @@ def _read_existing_reviewer(path: Path) -> tuple[str, list[str]] | None:
         return None
     issues = [str(issue) for issue in data.get("issues", [])]
     return verdict, issues
+
+
+def _suggested_write_objective(state_dir: Path, *, before_cycle: int) -> str | None:
+    notes = recent_blocker_notes(state_dir, before_cycle=before_cycle).lower()
+    if "diff validation" not in notes and "builder diff validation" not in notes:
+        return None
+    return (
+        "Change player starting hp from 10 to 15 in game/src/engine.ts "
+        "and update the matching expectation in game/tests/engine.test.ts."
+    )
 
 
 def _is_verification_only_objective(objective: str) -> bool:

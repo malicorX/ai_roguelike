@@ -10,6 +10,7 @@ from eval_lab.evaluate_candidate import evaluate_candidate
 from eval_lab.protocol import EvaluationReport, EvaluationRequest
 
 RunCommand = Callable[[list[str]], None]
+RunEvalCommand = Callable[[list[str]], subprocess.CompletedProcess[str]]
 
 
 class EvaluationTarget(StrEnum):
@@ -25,11 +26,13 @@ class EvaluationClient:
         remote_host: str = "sparky2",
         remote_repo: str = "~/ai_roguelike",
         run_command: RunCommand | None = None,
+        run_eval_command: RunEvalCommand | None = None,
     ) -> None:
         self.target = target
         self.remote_host = remote_host
         self.remote_repo = remote_repo
         self._run_command = run_command or _run_command
+        self._run_eval_command = run_eval_command or _run_eval_command
 
     def evaluate(
         self,
@@ -69,7 +72,7 @@ class EvaluationClient:
             )
         self._run_command(["ssh", self.remote_host, sync_command])
         self._run_command(["scp", str(request_path), f"{self.remote_host}:{remote_request}"])
-        self._run_command(
+        eval_result = self._run_eval_command(
             [
                 "ssh",
                 self.remote_host,
@@ -77,7 +80,14 @@ class EvaluationClient:
             ]
         )
         self._run_command(["scp", f"{self.remote_host}:{remote_report}", str(report_path)])
+        if not report_path.is_file():
+            detail = (eval_result.stderr or eval_result.stdout).strip()
+            raise RuntimeError(detail or "sparky2 evaluation failed without a report artifact.")
 
 
 def _run_command(command: list[str]) -> None:
     subprocess.run(command, check=True)
+
+
+def _run_eval_command(command: list[str]) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(command, check=False, capture_output=True, text=True)

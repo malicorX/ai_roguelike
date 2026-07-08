@@ -170,6 +170,27 @@ def run_pilot_cycle(
         )
 
     selected_objective = _objective_from_director_output(director_output)
+    if apply_writes and _is_verification_only_objective(selected_objective):
+        issue = f"Verification-only objective rejected in write mode: {selected_objective}"
+        _cycle_log(state_dir, cycle_number, "blocked at director objective gate")
+        return _blocked_gate_result(
+            repo_root,
+            state_dir,
+            cycle_number=cycle_number,
+            objective=selected_objective,
+            spec=spec,
+            director_path=director_path,
+            designer_path=designer_path,
+            builder_path=builder_path,
+            reviewer_path=reviewer_path,
+            proposal_lint_path=proposal_lint_path,
+            request_path=request_path,
+            report_path=report_path,
+            checks=["director objective gate"],
+            bugs=[issue],
+            repro_steps=["Pick a concrete code change in game/src, game/tests, or game/smoke."],
+            blocking_reasons=["Director picked a verification-only objective in write mode.", issue],
+        )
     try:
         existing_designer = _read_existing_artifact(designer_path)
         if existing_designer is not None and director_mode == DirectorMode.MODEL:
@@ -1660,6 +1681,22 @@ def _read_existing_reviewer(path: Path) -> tuple[str, list[str]] | None:
         return None
     issues = [str(issue) for issue in data.get("issues", [])]
     return verdict, issues
+
+
+def _is_verification_only_objective(objective: str) -> bool:
+    lowered = objective.strip().lower()
+    if lowered == DEFAULT_OBJECTIVE.lower():
+        return True
+    markers = (
+        "verify that",
+        "remains playable",
+        "verification only",
+        "no code change",
+        "without code change",
+        "without modifying",
+        "baseline playability",
+    )
+    return any(marker in lowered for marker in markers)
 
 
 def _objective_from_director_output(output: str) -> str:

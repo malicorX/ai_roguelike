@@ -28,6 +28,44 @@ def _looks_like_unified_diff(candidate: str) -> bool:
     return candidate.startswith("diff --git") or candidate.startswith("--- ")
 
 
+def validate_unified_diff(repo_root: Path, diff: str) -> list[str]:
+    issues: list[str] = []
+    try:
+        repaired = repair_unified_diff(repo_root, diff)
+    except PatchApplyError as exc:
+        return [str(exc)]
+
+    for file_patch in _iter_file_patches(repaired):
+        lines = [line for line in file_patch.splitlines() if line]
+        if len(lines) < 2:
+            continue
+        old_header = lines[0]
+        new_header = lines[1]
+        old_path = _diff_path_from_header(old_header)
+        new_path = _diff_path_from_header(new_header)
+        is_new_file = old_header.strip() == "--- /dev/null" or not (repo_root / old_path).is_file()
+        if is_new_file:
+            continue
+        source_lines = _read_repo_lines(repo_root, new_path)
+        index = 2
+        hunk_number = 0
+        while index < len(lines):
+            if not lines[index].startswith("@@"):
+                index += 1
+                continue
+            hunk_number += 1
+            index += 1
+            body: list[str] = []
+            while index < len(lines) and not lines[index].startswith("@@"):
+                body.append(lines[index])
+                index += 1
+            old_pattern = [line[1:] for line in body if line.startswith(" ") or line.startswith("-")]
+            if old_pattern and _find_subsequence(source_lines, old_pattern) is None:
+                preview = old_pattern[0][:80]
+                issues.append(f"Hunk {hunk_number} context not found in {new_path}: {preview!r}")
+    return issues
+
+
 def apply_unified_diff(repo_root: Path, diff: str) -> None:
     repaired = repair_unified_diff(repo_root, diff)
     file_patches = list(_iter_file_patches(repaired))

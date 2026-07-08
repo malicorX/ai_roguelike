@@ -31,7 +31,13 @@ from studio.git_ops import (
     push_main,
     stage_all_and_commit,
 )
-from studio.patch_applier import PatchApplyError, PatchExtractError, apply_unified_diff, extract_unified_diff
+from studio.patch_applier import (
+    PatchApplyError,
+    PatchExtractError,
+    apply_unified_diff,
+    extract_unified_diff,
+    validate_unified_diff,
+)
 from studio.publish_devlog import publish_site
 from studio.role_runner import run_role
 
@@ -291,6 +297,33 @@ def run_pilot_cycle(
             blocking_reasons=["Builder proposal lint failed.", *proposal_issues],
         )
 
+    if apply_writes:
+        try:
+            candidate_diff = extract_unified_diff(builder_output)
+            diff_validation_issues = validate_unified_diff(repo_root, candidate_diff)
+        except PatchExtractError as exc:
+            diff_validation_issues = [str(exc)]
+        if diff_validation_issues:
+            _cycle_log(state_dir, cycle_number, f"blocked at diff validation ({len(diff_validation_issues)} issues)")
+            return _blocked_gate_result(
+                repo_root,
+                state_dir,
+                cycle_number=cycle_number,
+                objective=selected_objective,
+                spec=pilot_spec,
+                director_path=director_path,
+                designer_path=designer_path,
+                builder_path=builder_path,
+                reviewer_path=reviewer_path,
+                proposal_lint_path=proposal_lint_path,
+                request_path=request_path,
+                report_path=report_path,
+                checks=["builder diff validation"],
+                bugs=diff_validation_issues,
+                repro_steps=["Regenerate the Builder diff using only lines from the provided source excerpts."],
+                blocking_reasons=["Builder diff validation failed.", *diff_validation_issues],
+            )
+
     try:
         existing_reviewer = _read_existing_reviewer(reviewer_path)
         if existing_reviewer is not None and director_mode == DirectorMode.MODEL:
@@ -309,6 +342,7 @@ def run_pilot_cycle(
             roles_dir=roles_dir,
             role_runner=role_runner,
             role_timeout_seconds=role_timeout_seconds,
+            apply_writes=apply_writes,
         )
     except (TimeoutError, OSError, RuntimeError, ValueError) as exc:
         return _blocked_role_failure_result(
@@ -674,6 +708,24 @@ def _run_write_cycle(
             report_path=report_path,
             reasons=[str(exc)],
             checks=["builder diff extraction"],
+        )
+
+    diff_validation_issues = validate_unified_diff(repo_root, diff)
+    if diff_validation_issues:
+        return _blocked_write_result(
+            repo_root,
+            state_dir,
+            cycle_number=cycle_number,
+            objective=objective,
+            spec=spec,
+            builder_output=builder_output,
+            director_path=director_path,
+            builder_path=builder_path,
+            proposal_lint_path=proposal_lint_path,
+            request_path=request_path,
+            report_path=report_path,
+            reasons=diff_validation_issues,
+            checks=["builder diff validation"],
         )
 
     try:
@@ -1173,18 +1225,35 @@ def _builder_context(
     return "\n".join(parts)
 
 
-def _reviewer_context(objective: str, designer_output: str, builder_output: str) -> str:
-    return "\n".join(
-        [
-            f"Objective: {objective}",
-            "",
-            "Designer spec:",
-            designer_output.strip(),
-            "",
-            "Builder output to review:",
-            builder_output.strip(),
-        ]
-    )
+def _reviewer_context(
+    repo_root: Path,
+    objective: str,
+    designer_output: str,
+    builder_output: str,
+    *,
+    apply_writes: bool = False,
+) -> str:
+    parts = [
+        f"Objective: {objective}",
+        "",
+        "Designer spec:",
+        designer_output.strip(),
+        "",
+        "Builder output to review:",
+        builder_output.strip(),
+    ]
+    if apply_writes:
+        snippet_paths = _builder_repo_files(repo_root, designer_output)[:8]
+        snippets = _source_snippets(repo_root, snippet_paths)
+        if snippets:
+            parts.extend(
+                [
+                    "",
+                    "Current source excerpts (reject diffs whose removed/context lines are not present here):",
+                    snippets,
+                ]
+            )
+    return "\n".join(parts)
 
 
 def _run_reviewer(
@@ -1199,6 +1268,7 @@ def _run_reviewer(
     roles_dir: Path,
     role_runner: RoleRunner,
     role_timeout_seconds: int,
+    apply_writes: bool = False,
 ) -> tuple[str, list[str]]:
     if director_mode == DirectorMode.STATIC:
         reviewer_output = "PASS"
@@ -1207,7 +1277,13 @@ def _run_reviewer(
             studio_config,
             roles_dir,
             "reviewer",
-            _reviewer_context(objective, designer_output, builder_output),
+            _reviewer_context(
+                repo_root,
+                objective,
+                designer_output,
+                builder_output,
+                apply_writes=apply_writes,
+            ),
             timeout_seconds=role_timeout_seconds,
         )
     verdict, issues = _parse_reviewer_verdict(reviewer_output)

@@ -6,6 +6,7 @@ Rules:
 - Compare the Builder output against the Designer spec and Director objective.
 - Block diffs that invent paths, change unrelated files, or exceed scope.
 - Block write-mode diffs that look hallucinated (wrong types, invented classes, bad hunk context).
+- Reject diffs whose removed/context lines are not present in the provided source excerpts.
 - Prioritize concrete bugs and missing tests over style.
 - Require tests when gameplay behavior changes.
 

@@ -3,7 +3,15 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from studio.patch_applier import PatchApplyError, PatchExtractError, apply_unified_diff, diff_paths, extract_unified_diff, repair_unified_diff
+from studio.patch_applier import (
+    PatchApplyError,
+    PatchExtractError,
+    apply_unified_diff,
+    diff_paths,
+    extract_unified_diff,
+    repair_unified_diff,
+    validate_unified_diff,
+)
 
 
 class PatchApplierTest(unittest.TestCase):
@@ -108,6 +116,45 @@ npm test
             self.assertIn("@@ -3,3 +3,6 @@", repaired)
             apply_unified_diff(repo, diff)
             self.assertIn('it("added"', target.read_text(encoding="utf-8"))
+
+    def test_validate_unified_diff_rejects_hallucinated_context(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            repo = Path(tmpdir)
+            _init_repo(repo)
+            target = repo / "game" / "src" / "render.ts"
+            target.parent.mkdir(parents=True)
+            target.write_text('export function toGlyphGrid() { return []; }\n', encoding="utf-8")
+            _git(repo, "add", ".")
+            _git(repo, "commit", "-m", "init")
+
+            diff = """--- a/game/src/render.ts
++++ b/game/src/render.ts
+@@ -10,3 +10,3 @@
+ export function renderStatusText(element: HTMLElement): void {
+-  element.innerText = "Staus";
++  element.innerText = "Status";
+ }
+"""
+            issues = validate_unified_diff(repo, diff)
+            self.assertTrue(issues)
+            self.assertIn("game/src/render.ts", issues[0])
+
+    def test_validate_unified_diff_accepts_matching_context(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            repo = Path(tmpdir)
+            _init_repo(repo)
+            target = repo / "readme.txt"
+            target.write_text("hello\n", encoding="utf-8")
+            _git(repo, "add", "readme.txt")
+            _git(repo, "commit", "-m", "init")
+
+            diff = """--- a/readme.txt
++++ b/readme.txt
+@@ -1 +1,2 @@
+ hello
++world
+"""
+            self.assertEqual(validate_unified_diff(repo, diff), [])
 
 
 def _init_repo(repo: Path) -> None:

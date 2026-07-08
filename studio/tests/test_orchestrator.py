@@ -853,7 +853,7 @@ class OrchestratorTest(unittest.TestCase):
             report_data = json.loads(result.report_path.read_text(encoding="utf-8"))
 
         self.assertTrue(result.blocked)
-        self.assertIn("Write cycle blocked before evaluation.", result.blocking_reasons)
+        self.assertIn("Builder diff validation failed.", result.blocking_reasons)
         self.assertEqual(report_data["qa"]["verdict"], "REWORK")
 
     def test_builder_role_timeout_writes_blocked_report(self) -> None:

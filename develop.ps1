@@ -16,7 +16,7 @@ $ErrorActionPreference = "Stop"
 
 $dryRunArg = if ($FullLoop) { "" } else { "--dry-run" }
 $applyWritesArg = if ($ApplyWrites) { "--apply-writes" } else { "" }
-$orchestratorCommand = "PYTHONUNBUFFERED=1 python3 -u -m studio.orchestrator --time '$Time' --max-cycles $MaxCycles --deploy '$Deploy' --evaluation-target '$EvaluationTarget' --director-mode '$DirectorMode' --role-timeout-seconds $RoleTimeoutSeconds --models '$ModelAssignments' $dryRunArg $applyWritesArg"
+$orchestratorCommand = "env PYTHONUNBUFFERED=1 python3 -u -m studio.orchestrator --time '$Time' --max-cycles $MaxCycles --deploy '$Deploy' --evaluation-target '$EvaluationTarget' --director-mode '$DirectorMode' --role-timeout-seconds $RoleTimeoutSeconds --models '$ModelAssignments' $dryRunArg $applyWritesArg"
 $remoteCommand = if ($Detached) {
   @(
     "cd ~/ai_roguelike"

@@ -46,4 +46,34 @@ describe("roguelike engine", () => {
     expect(defeated.enemies).toEqual([]);
     expect(defeated.log).toContain("enemy-1 dies.");
   });
+  it("moves the player left on floor tiles", () => {
+    const game = createGame({ seed: 1 });
+    const moved = stepGame(game, { type: "move", dx: -1, dy: 0 });
+    expect(moved.player).toMatchObject({ x: 1, y: 2, hp: 10 });
+  });
+  it("moves the player up on floor tiles", () => {
+    const game = createGame({ seed: 1 });
+    const moved = stepGame(game, { type: "move", dx: 0, dy: -1 });
+    expect(moved.player).toMatchObject({ x: 2, y: 1, hp: 10 });
+  });
+  it("blocks movement when player is at left map edge", () => {
+    const game = createGame({ seed: 1 });
+    const nearLeftEdge = {
+      ...game,
+      player: { ...game.player, x: 0 },
+    };
+    const blocked = stepGame(nearLeftEdge, { type: "move", dx: -1, dy: 0 });
+    expect(blocked.player).toMatchObject({ x: 0, y: 2, hp: 10 });
+    expect(blocked.log.at(-1)).toEqual("The wall blocks your way.");
+  });
+  it("defeats enemy when moving into it after previous combat", () => {
+    const game = createGame({ seed: 1 });
+    // First, move player to adjacent position (as in existing test)
+    const nearEnemy = { ...game, player: { ...game.player, x: 6, y: 4 } };
+    const hit = stepGame(nearEnemy, { type: "move", dx: 1, dy: 0 });
+    // Now move again to defeat enemy (since enemy hp reduced)
+    const defeated = stepGame(hit, { type: "move", dx: 1, dy: 0 });
+    expect(defeated.enemies).toEqual([]);
+    expect(defeated.log).toContain("enemy-1 dies.");
+  });
 });

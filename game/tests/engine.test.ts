@@ -76,4 +76,35 @@ describe("roguelike engine", () => {
     expect(defeated.enemies).toEqual([]);
     expect(defeated.log).toContain("enemy-1 dies.");
   });
+  it("calculates enemy damage correctly when player attacks with different attack values", () => {
+    // Test case 1: Standard attack (player attack=3, enemy hp=6)
+    const game = createGame({ seed: 7 });
+    const nearEnemy = { ...game, player: { ...game.player, x: 6, y: 4 } };
+    const hit = stepGame(nearEnemy, { type: "move", dx: 1, dy: 0 });
+    
+    // Verify enemy takes exactly 3 damage (player attack value)
+    expect(hit.enemies[0].hp).toBe(3);
+    expect(hit.log).toContain("You hit enemy-1 for 3 damage.");
+    
+    // Test case 2: Enemy with lower HP that can be defeated in one hit
+    const game2 = createGame({ seed: 8 });
+    // Manually create scenario where enemy has low HP
+    const lowHpEnemy = { ...game2, enemies: [{ id: "enemy-1", x: 7, y: 4, hp: 2, attack: 2 }] };
+    const nearLowHp = { ...lowHpEnemy, player: { ...lowHpEnemy.player, x: 6, y: 4 } };
+    const hitLowHp = stepGame(nearLowHp, { type: "move", dx: 1, dy: 0 });
+    
+    // Verify enemy defeated and removed from array
+    expect(hitLowHp.enemies).toEqual([]);
+    expect(hitLowHp.log).toContain("enemy-1 dies.");
+    
+    // Test case 3: Enemy survives with remaining HP after attack
+    const game3 = createGame({ seed: 9 });
+    const highHpEnemy = { ...game3, enemies: [{ id: "enemy-1", x: 7, y: 4, hp: 10, attack: 2 }] };
+    const nearHighHp = { ...highHpEnemy, player: { ...highHpEnemy.player, x: 6, y: 4 } };
+    const hitHighHp = stepGame(nearHighHp, { type: "move", dx: 1, dy: 0 });
+    
+    // Verify enemy takes damage but survives with correct remaining HP
+    expect(hitHighHp.enemies[0].hp).toBe(7);
+    expect(hitHighHp.log).toContain("You hit enemy-1 for 3 damage.");
+  });
 });

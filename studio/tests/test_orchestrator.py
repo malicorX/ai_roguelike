@@ -484,6 +484,64 @@ class OrchestratorTest(unittest.TestCase):
         self.assertEqual(lint_data["verdict"], "PASS")
         self.assertEqual(lint_data["issues"], [])
 
+    def test_pilot_cycle_allows_backticked_npm_commands_with_trailing_colons(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            repo = Path(tmpdir)
+            state_dir = repo / "studio" / "state"
+            roles_dir = repo / "studio" / "roles"
+            game = repo / "game"
+            smoke = game / "smoke"
+            smoke.mkdir(parents=True)
+            (game / "package.json").write_text(
+                json.dumps({"scripts": {"test": "vitest run", "smoke": "playwright test"}}),
+                encoding="utf-8",
+            )
+            (smoke / "screenshot-baselines.spec.ts").write_text("export {};\n", encoding="utf-8")
+            roles_dir.mkdir(parents=True)
+            self._write_success_npm(game)
+
+            def fake_role_runner(*args: object, **_kwargs: object) -> str:
+                role = args[2]
+                if role == "director":
+                    return "Objective: Add screenshot baselines."
+                if role == "designer":
+                    return self._default_designer_output()
+                if role == "builder":
+                    return "\n".join(
+                        [
+                            "Created placeholder files at `game/tests/baselines/main_menu.png`.",
+                            "Helpers live in `../src/testHarness`.",
+                            "Proposed changed files:",
+                            "1. `game/smoke/screenshot-baselines.spec.ts` (Modified)",
+                            "2. `game/tests/baselines/main_menu.png` (New)",
+                            "Recommended Test Commands:",
+                            "- `npm run smoke`: Run visual regression tests.",
+                            "- `npm test`: Verify TypeScript coverage.",
+                        ]
+                    )
+                if role == "reviewer":
+                    return self._pass_reviewer_output()
+                raise AssertionError(f"Unexpected role: {role}")
+
+            with patch("studio.orchestrator._git_output") as git_output:
+                git_output.side_effect = ["main", "abc1234", "main", "abc1234"]
+                result = run_pilot_cycle(
+                    repo,
+                    state_dir,
+                    cycle_number=12,
+                    evaluation_target=EvaluationTarget.LOCAL,
+                    director_mode=DirectorMode.MODEL,
+                    studio_config=StudioConfig.from_model_string("director=test-model,builder=test-model,designer=test-model,reviewer=test-model"),
+                    roles_dir=roles_dir,
+                    role_runner=fake_role_runner,
+                )
+
+            lint_data = json.loads(result.proposal_lint_path.read_text(encoding="utf-8"))
+
+        self.assertFalse(result.blocked)
+        self.assertEqual(lint_data["verdict"], "PASS")
+        self.assertEqual(lint_data["issues"], [])
+
     def test_pilot_cycle_allows_directory_mentions_in_builder_prose(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             repo = Path(tmpdir)

@@ -1356,10 +1356,40 @@ def _known_repo_files(repo_root: Path, *, scope: str = "all") -> list[str]:
     return ordered
 
 
+def _proposed_new_paths(builder_output: str) -> set[str]:
+    paths: set[str] = set()
+    lines = builder_output.splitlines()
+    for line in lines:
+        lower = line.lower()
+        marks_new = (
+            "(new)" in lower
+            or lower.rstrip().endswith(" new")
+            or "new file mode" in lower
+            or ("created" in lower and "placeholder" in lower)
+        )
+        if not marks_new:
+            continue
+        for match in re.findall(r"`([^`]+)`", line):
+            cleaned = match.strip()
+            if _looks_like_repo_path(cleaned) and not cleaned.startswith("."):
+                paths.add(cleaned)
+    for index, line in enumerate(lines):
+        if not line.startswith("+++ b/"):
+            continue
+        context = "\n".join(lines[max(0, index - 3) : index])
+        if "new file mode" not in context:
+            continue
+        path = line.removeprefix("+++ b/").strip()
+        if _looks_like_repo_path(path):
+            paths.add(path)
+    return paths
+
+
 def _lint_builder_proposal(repo_root: Path, builder_output: str) -> list[str]:
     issues: list[str] = []
     seen_issues: set[str] = set()
     npm_scripts = _known_npm_scripts(repo_root)
+    new_paths = _proposed_new_paths(builder_output)
     for line in builder_output.splitlines():
         normalized = line.strip()
         lower = normalized.lower()
@@ -1376,9 +1406,13 @@ def _lint_builder_proposal(repo_root: Path, builder_output: str) -> list[str]:
                 for issue in _lint_shell_command(proposed_path, npm_scripts):
                     _append_issue(issues, seen_issues, issue)
                 continue
+            if proposed_path.startswith("."):
+                continue
             if not _looks_like_repo_path(proposed_path):
                 continue
             if proposed_path.endswith("/"):
+                continue
+            if proposed_path in new_paths:
                 continue
             if "new" in lower:
                 continue
@@ -1397,15 +1431,21 @@ def _extract_shell_command(line: str) -> str | None:
     stripped = line.strip()
     if not stripped or stripped.startswith(("#", "```")):
         return None
-    stripped = stripped.lstrip("-*").strip()
-    stripped = stripped.strip("`").strip()
+    for match in re.finditer(r"`([^`]+)`", stripped):
+        candidate = match.group(1).strip()
+        if _is_shell_command(candidate):
+            return _normalize_shell_command(candidate)
+    stripped = stripped.lstrip("-*").strip().strip("`").strip()
     if _is_shell_command(stripped):
         return _normalize_shell_command(stripped)
     return None
 
 
 def _normalize_shell_command(command: str) -> str:
-    return " ".join(part.strip("`") for part in command.strip().strip("`").split())
+    def clean(part: str) -> str:
+        return part.strip("`").rstrip(":;,.")
+
+    return " ".join(clean(part) for part in command.strip().strip("`").split())
 
 
 def _is_shell_command(value: str) -> bool:

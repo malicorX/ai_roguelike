@@ -64,6 +64,8 @@ def validate_unified_diff(repo_root: Path, diff: str) -> list[str]:
                 preview = old_pattern[0][:80]
                 issues.append(f"Hunk {hunk_number} context not found in {new_path}: {preview!r}")
 
+    issues.extend(_validate_added_imports(repo_root, repaired))
+
     if not issues:
         check = subprocess.run(
             ["git", "apply", "--check", "--recount", "--whitespace=nowarn", "-"],
@@ -77,6 +79,44 @@ def validate_unified_diff(repo_root: Path, diff: str) -> list[str]:
             message = check.stderr.strip() or check.stdout.strip() or "git apply --check failed."
             issues.append(message)
     return issues
+
+
+def _validate_added_imports(repo_root: Path, diff: str) -> list[str]:
+    issues: list[str] = []
+    for line in diff.splitlines():
+        if not line.startswith("+") or "import" not in line:
+            continue
+        content = line[1:].strip()
+        match = re.match(r"""import\s+\{([^}]+)\}\s+from\s+["']([^"']+)["']""", content)
+        if not match:
+            continue
+        symbols = [part.strip().split(" as ")[0].strip() for part in match.group(1).split(",") if part.strip()]
+        module = match.group(2)
+        if not module.startswith("../src/"):
+            continue
+        rel_path = f"game/src/{module.removeprefix('../src/')}"
+        if not rel_path.endswith(".ts"):
+            rel_path += ".ts"
+        source_path = repo_root / rel_path
+        if not source_path.is_file():
+            issues.append(f"Added import references missing module: {rel_path}")
+            continue
+        source = source_path.read_text(encoding="utf-8")
+        for symbol in symbols:
+            if not _is_exported_symbol(source, symbol):
+                issues.append(f"Added import {symbol!r} from {module}, but {rel_path} does not export it")
+    return issues
+
+
+def _is_exported_symbol(source: str, symbol: str) -> bool:
+    patterns = [
+        rf"export function {re.escape(symbol)}\b",
+        rf"export const {re.escape(symbol)}\b",
+        rf"export type {re.escape(symbol)}\b",
+        rf"export class {re.escape(symbol)}\b",
+        rf"export \{{[^}}]*\b{re.escape(symbol)}\b",
+    ]
+    return any(re.search(pattern, source) for pattern in patterns)
 
 
 def apply_unified_diff(repo_root: Path, diff: str) -> None:

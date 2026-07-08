@@ -139,6 +139,26 @@ npm test
             self.assertTrue(issues)
             self.assertIn("game/src/render.ts", issues[0])
 
+    def test_validate_unified_diff_rejects_import_of_unexported_symbol(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            repo = Path(tmpdir)
+            _init_repo(repo)
+            engine = repo / "game" / "src" / "engine.ts"
+            engine.parent.mkdir(parents=True)
+            engine.write_text("export function createGame() { return {}; }\n", encoding="utf-8")
+            _git(repo, "add", ".")
+            _git(repo, "commit", "-m", "init")
+
+            diff = """--- /dev/null
++++ b/game/tests/input.test.ts
+@@ -0,0 +1,2 @@
++import { actionFromKey } from "../src/engine";
++export {};
+"""
+            issues = validate_unified_diff(repo, diff)
+            self.assertTrue(issues)
+            self.assertTrue(any("actionFromKey" in issue for issue in issues))
+
     def test_validate_unified_diff_rejects_malformed_patch(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             repo = Path(tmpdir)

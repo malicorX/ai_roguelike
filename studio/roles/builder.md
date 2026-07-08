@@ -15,6 +15,7 @@ Rules:
 - Prefer `diff --git a/path b/path` headers and patch the source excerpts provided in context.
 - Prefer one hunk per changed file; do not include future-state context (e.g. imports for symbols the same diff adds later).
 - For NEW files use `--- /dev/null` and `+++ b/path` headers.
+- Do not import symbols from `../src/*` unless they are exported in the provided source excerpts.
 - Do not invent existing paths; use provided repo paths or mark a proposed file as NEW.
 - Recommend only provided test commands; do not guess tools or npm scripts.
 - Canvas/HUD overlay text is drawn with `ctx.fillText` — unit tests must mock the canvas context or assert via smoke specs, not `toGlyphGrid()` output.

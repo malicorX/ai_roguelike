@@ -1290,7 +1290,8 @@ def _builder_context(
     ]
     if apply_writes:
         snippet_paths = _builder_repo_files(repo_root, designer_output)[:8]
-        snippets = _source_snippets(repo_root, snippet_paths)
+        scoped_paths = set(_paths_from_designer_spec(designer_output))
+        snippets = _source_snippets(repo_root, snippet_paths, scoped_paths=scoped_paths)
         if snippets:
             parts.extend(["", "Current source excerpts (diffs must apply to this code, not invented classes):", snippets])
     return "\n".join(parts)
@@ -1315,7 +1316,8 @@ def _reviewer_context(
     ]
     if apply_writes:
         snippet_paths = _builder_repo_files(repo_root, designer_output)[:8]
-        snippets = _source_snippets(repo_root, snippet_paths)
+        scoped_paths = set(_paths_from_designer_spec(designer_output))
+        snippets = _source_snippets(repo_root, snippet_paths, scoped_paths=scoped_paths)
         if snippets:
             parts.extend(
                 [
@@ -1381,13 +1383,25 @@ def _parse_reviewer_verdict(output: str) -> tuple[str, list[str]]:
     return "REWORK", [f"Reviewer output must start with PASS or REWORK: {stripped[:240]}"]
 
 
-def _source_snippets(repo_root: Path, paths: list[str], *, max_lines: int = 50) -> str:
+def _source_snippets(
+    repo_root: Path,
+    paths: list[str],
+    *,
+    max_lines: int = 50,
+    scoped_paths: set[str] | None = None,
+    scoped_full_file_max_lines: int = 120,
+) -> str:
     blocks: list[str] = []
     for path in paths:
         source = repo_root / path
         if not source.is_file():
             continue
-        excerpt = "\n".join(source.read_text(encoding="utf-8").splitlines()[:max_lines])
+        lines = source.read_text(encoding="utf-8").splitlines()
+        if scoped_paths and path in scoped_paths and len(lines) <= scoped_full_file_max_lines:
+            limit = len(lines)
+        else:
+            limit = min(len(lines), max_lines)
+        excerpt = "\n".join(lines[:limit])
         blocks.append(f"#### {path}\n```typescript\n{excerpt}\n```")
     return "\n\n".join(blocks)
 

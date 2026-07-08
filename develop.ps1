@@ -23,8 +23,7 @@ $remoteCommand = if ($Detached) {
     'export XDG_RUNTIME_DIR=/run/user/$UID'
     "mkdir -p studio/state"
     "rm -f studio/state/STOP"
-    "nohup $orchestratorCommand > ~/ai_roguelike/studio/state/loop.log 2>&1 < /dev/null &"
-    'echo $! > ~/ai_roguelike/studio/state/loop.pid'
+    "nohup $orchestratorCommand > ~/ai_roguelike/studio/state/loop.log 2>&1 < /dev/null & echo `$! > ~/ai_roguelike/studio/state/loop.pid"
     'echo "launched loop pid $(cat ~/ai_roguelike/studio/state/loop.pid)"'
     "tail -n 20 ~/ai_roguelike/studio/state/loop.log"
   ) -join "; "

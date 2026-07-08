@@ -84,5 +84,15 @@ describe("roguelike engine", () => {
     expect(result).toHaveProperty("enemies");
     expect(result).toHaveProperty("player");
     expect(result).toHaveProperty("log");
+  }),
+  it("increments turn counter on each step", () => {
+    const game = createGame({ seed: 1 });
+    expect(game.turn).toBe(0);
+    
+    const moved = stepGame(game, { type: "move", dx: 1, dy: 0 });
+    expect(moved.turn).toBe(1);
+    
+    const next = stepGame(moved, { type: "move", dx: 0, dy: 1 });
+    expect(next.turn).toBe(2);
   });
 });

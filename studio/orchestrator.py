@@ -369,6 +369,18 @@ def _publish_devlog(repo_root: Path, state_dir: Path) -> None:
     out_dir = repo_root / "site"
     result = publish_site(repo_root, state_dir, out_dir)
     print(f"published devlog: {result.devlog_index} ({result.cycle_count} cycles)", flush=True)
+    _sync_public_devlog(repo_root)
+
+
+def _sync_public_devlog(repo_root: Path) -> None:
+    script = repo_root / "deploy" / "sync_devlog.sh"
+    if not script.is_file():
+        return
+    sync = subprocess.run(["bash", str(script)], cwd=repo_root, capture_output=True, text=True, check=False)
+    if sync.returncode != 0:
+        print(f"devlog sync failed: {sync.stderr.strip() or sync.stdout.strip()}", flush=True)
+    elif sync.stdout.strip():
+        print(sync.stdout.strip(), flush=True)
 
 
 def _deploy_enabled(value: str) -> bool:

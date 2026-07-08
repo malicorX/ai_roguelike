@@ -101,10 +101,10 @@ def in_scope_paths_from_designer_spec(text: str) -> list[str]:
     for line in text.splitlines():
         stripped = line.strip()
         lowered = stripped.lower()
-        if lowered.startswith("3.") and "in-scope" in lowered:
+        if (lowered.startswith("3.") or lowered.startswith("##")) and "in-scope" in lowered:
             in_section = True
             continue
-        if in_section and lowered.startswith("4.") and "out of scope" in lowered:
+        if in_section and (lowered.startswith("4.") or (lowered.startswith("##") and "out of scope" in lowered)):
             break
         if not in_section:
             continue

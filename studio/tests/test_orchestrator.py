@@ -1096,13 +1096,12 @@ class OrchestratorTest(unittest.TestCase):
                     "Implementation summary: update render label.",
                     "Proposed changed files:",
                     "- `game/src/render.ts`",
-                    "```diff",
-                    "diff --git a/game/src/render.ts b/game/src/render.ts",
-                    "--- a/game/src/render.ts",
-                    "+++ b/game/src/render.ts",
-                    "@@ -1 +1 @@",
-                    "-export const label = 'play';",
-                    "+export const label = 'play-updated';",
+                    "```search_replace game/src/render.ts",
+                    "<<<<<<< SEARCH",
+                    "export const label = 'play';",
+                    "=======",
+                    "export const label = 'play-updated';",
+                    ">>>>>>> REPLACE",
                     "```",
                 ]
             )
@@ -1112,7 +1111,15 @@ class OrchestratorTest(unittest.TestCase):
                 if role == "director":
                     return "Objective: Update render label."
                 if role == "designer":
-                    return self._default_designer_output()
+                    return "\n".join(
+                        [
+                            "## Summary",
+                            "Update render label.",
+                            "",
+                            "## In-scope files",
+                            "- `game/src/render.ts`",
+                        ]
+                    )
                 if role == "builder":
                     return builder_output
                 if role == "reviewer":

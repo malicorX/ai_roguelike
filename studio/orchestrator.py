@@ -49,6 +49,16 @@ from studio.patch_applier import (
     extract_unified_diff,
     validate_unified_diff,
 )
+from studio.search_replace_applier import (
+    apply_builder_patch,
+    extract_builder_patch,
+    validate_builder_patch,
+)
+from studio.write_scope import (
+    allowed_builder_paths,
+    primary_implementation_path,
+    validate_write_scope,
+)
 from studio.publish_devlog import publish_site
 from studio.role_runner import run_role
 
@@ -242,6 +252,7 @@ def run_pilot_cycle(
                 roles_dir=roles_dir,
                 role_runner=role_runner,
                 role_timeout_seconds=role_timeout_seconds,
+                apply_writes=apply_writes,
             )
     except (TimeoutError, OSError, RuntimeError, ValueError) as exc:
         return _blocked_role_failure_result(
@@ -283,6 +294,29 @@ def run_pilot_cycle(
             repro_steps=["Rewrite the Designer spec to include at least one in-scope file under game/src/ or game/smoke/."],
             blocking_reasons=["Designer spec rejected by gameplay churn guard.", issue],
         )
+
+    if apply_writes:
+        write_scope_issues = validate_write_scope(designer_output)
+        if write_scope_issues:
+            _cycle_log(state_dir, cycle_number, f"blocked at write scope gate ({len(write_scope_issues)} issues)")
+            return _blocked_gate_result(
+                repo_root,
+                state_dir,
+                cycle_number=cycle_number,
+                objective=selected_objective,
+                spec=spec,
+                director_path=director_path,
+                designer_path=designer_path,
+                builder_path=builder_path,
+                reviewer_path=reviewer_path,
+                proposal_lint_path=proposal_lint_path,
+                request_path=request_path,
+                report_path=report_path,
+                checks=["write scope gate"],
+                bugs=write_scope_issues,
+                repro_steps=["Rewrite the Designer spec with exactly one implementation file under game/src/ or game/smoke/."],
+                blocking_reasons=["Designer spec rejected by write scope guard.", *write_scope_issues],
+            )
 
     if apply_writes and _is_verification_only_designer_spec(designer_output):
         issue = "Designer spec is verification-only and does not request a concrete code change."
@@ -417,20 +451,25 @@ def run_pilot_cycle(
         )
 
     if apply_writes:
-        diff_validation_issues: list[str] = []
-        for diff_attempt in range(2):
+        patch_validation_issues: list[str] = []
+        builder_allowed_paths = allowed_builder_paths(designer_output)
+        for patch_attempt in range(2):
             try:
-                candidate_diff = extract_unified_diff(builder_output)
-                diff_validation_issues = validate_unified_diff(repo_root, candidate_diff)
+                candidate_patch = extract_builder_patch(builder_output)
+                patch_validation_issues = validate_builder_patch(
+                    repo_root,
+                    candidate_patch,
+                    allowed_paths=builder_allowed_paths,
+                )
             except PatchExtractError as exc:
-                diff_validation_issues = [str(exc)]
-            if not diff_validation_issues:
+                patch_validation_issues = [str(exc)]
+            if not patch_validation_issues:
                 break
-            if diff_attempt == 0 and director_mode == DirectorMode.MODEL:
+            if patch_attempt == 0 and director_mode == DirectorMode.MODEL:
                 _cycle_log(
                     state_dir,
                     cycle_number,
-                    f"builder diff validation failed ({len(diff_validation_issues)} issues), retrying",
+                    f"builder patch validation failed ({len(patch_validation_issues)} issues), retrying",
                 )
                 try:
                     builder_output = _run_builder(
@@ -446,7 +485,7 @@ def run_pilot_cycle(
                         role_runner=role_runner,
                         role_timeout_seconds=role_timeout_seconds,
                         apply_writes=apply_writes,
-                        diff_validation_issues=diff_validation_issues,
+                        patch_validation_issues=patch_validation_issues,
                     )
                 except (TimeoutError, OSError, RuntimeError, ValueError) as exc:
                     return _blocked_role_failure_result(
@@ -468,8 +507,8 @@ def run_pilot_cycle(
                     )
                 builder_path.write_text(builder_output.rstrip() + "\n", encoding="utf-8")
                 continue
-        if diff_validation_issues:
-            _cycle_log(state_dir, cycle_number, f"blocked at diff validation ({len(diff_validation_issues)} issues)")
+        if patch_validation_issues:
+            _cycle_log(state_dir, cycle_number, f"blocked at patch validation ({len(patch_validation_issues)} issues)")
             return _blocked_gate_result(
                 repo_root,
                 state_dir,
@@ -483,10 +522,10 @@ def run_pilot_cycle(
                 proposal_lint_path=proposal_lint_path,
                 request_path=request_path,
                 report_path=report_path,
-                checks=["builder diff validation"],
-                bugs=diff_validation_issues,
-                repro_steps=["Regenerate the Builder diff using only lines from the provided source excerpts."],
-                blocking_reasons=["Builder diff validation failed.", *diff_validation_issues],
+                checks=["builder patch validation"],
+                bugs=patch_validation_issues,
+                repro_steps=["Regenerate Builder output using search_replace blocks copied from the source excerpts."],
+                blocking_reasons=["Builder patch validation failed.", *patch_validation_issues],
             )
 
     try:
@@ -867,7 +906,7 @@ def _run_write_cycle(
     branch: str | None = None
 
     try:
-        diff = extract_unified_diff(builder_output)
+        patch = extract_builder_patch(builder_output)
     except PatchExtractError as exc:
         return _blocked_write_result(
             repo_root,
@@ -882,11 +921,11 @@ def _run_write_cycle(
             request_path=request_path,
             report_path=report_path,
             reasons=[str(exc)],
-            checks=["builder diff extraction"],
+            checks=["builder patch extraction"],
         )
 
-    diff_validation_issues = validate_unified_diff(repo_root, diff)
-    if diff_validation_issues:
+    patch_validation_issues = validate_builder_patch(repo_root, patch)
+    if patch_validation_issues:
         return _blocked_write_result(
             repo_root,
             state_dir,
@@ -899,13 +938,13 @@ def _run_write_cycle(
             proposal_lint_path=proposal_lint_path,
             request_path=request_path,
             report_path=report_path,
-            reasons=diff_validation_issues,
-            checks=["builder diff validation"],
+            reasons=patch_validation_issues,
+            checks=["builder patch validation"],
         )
 
     try:
         branch = create_cycle_branch(repo_root, cycle_number, objective)
-        apply_unified_diff(repo_root, diff)
+        apply_builder_patch(repo_root, patch)
         commit = stage_all_and_commit(repo_root, f"cycle {cycle_number}: {objective}")
         changed_files = changed_files_against_main(repo_root)
         apply_path.write_text(
@@ -1244,6 +1283,8 @@ def _director_context(
             "",
             "Write-mode rules:",
             "- Objectives must request concrete, small game changes (game/src, game/tests, game/smoke).",
+            "- Pick one implementation file per cycle (game/src/ or game/smoke/); defer test edits to later cycles.",
+            "- After diff/patch validation failures, pick a smaller single-file change with obvious anchor code.",
             "- Do not pick verification-only objectives that forbid code changes.",
             "- After a test-only merge, the next cycle must include a player-visible game/src/ or game/smoke/ change.",
             "- Avoid repeating objectives that recently blocked at reviewer or lint.",
@@ -1349,9 +1390,22 @@ def _designer_context(
     cycle_number: int,
     objective: str,
     director_output: str,
+    *,
+    apply_writes: bool = False,
 ) -> str:
     file_summary = "\n".join(f"- {path}" for path in _known_repo_files(repo_root))
     command_summary = "\n".join(f"- {command}" for command in _known_test_commands(repo_root))
+    write_scope_rules = (
+        [
+            "",
+            "Write-mode scope rules:",
+            "- List exactly ONE implementation file under game/src/ or game/smoke/ in In-scope files.",
+            "- Put game/tests/ updates in Out of scope; sparky2 will report regressions after src applies.",
+            "- Prefer editing existing functions over creating new modules.",
+        ]
+        if apply_writes
+        else []
+    )
     return "\n".join(
         [
             f"Objective: {objective}",
@@ -1368,6 +1422,7 @@ def _designer_context(
             "GameState fields (use these exact names in specs): seed, turn, map, player, enemies, log, diagnostics.",
             "",
             "Gameplay churn guard: if recent merges were test-only, in-scope files must include game/src/ or game/smoke/.",
+            *write_scope_rules,
             "",
             "Known existing paths:",
             file_summary,
@@ -1391,6 +1446,7 @@ def _run_designer(
     roles_dir: Path,
     role_runner: RoleRunner,
     role_timeout_seconds: int,
+    apply_writes: bool = False,
 ) -> str:
     if director_mode == DirectorMode.STATIC:
         designer_output = "\n".join(
@@ -1403,10 +1459,11 @@ def _run_designer(
                 "2. Change is visible in gameplay or covered by a new unit test.",
                 "",
                 "## In-scope files",
-                "- (Builder to choose from known paths)",
+                "- `game/src/main.ts`",
                 "",
                 "## Out of scope",
                 "- Studio tooling and refactors unrelated to the objective.",
+                "- `game/tests/` updates in this cycle.",
                 "",
                 "## Test plan",
                 "- npm test",
@@ -1419,7 +1476,14 @@ def _run_designer(
             studio_config,
             roles_dir,
             "designer",
-            _designer_context(repo_root, state_dir, cycle_number, objective, director_output),
+            _designer_context(
+                repo_root,
+                state_dir,
+                cycle_number,
+                objective,
+                director_output,
+                apply_writes=apply_writes,
+            ),
             timeout_seconds=role_timeout_seconds,
         )
     designer_path.write_text(designer_output.rstrip() + "\n", encoding="utf-8")
@@ -1439,15 +1503,16 @@ def _builder_context(
     file_summary = "\n".join(f"- {path}" for path in _builder_repo_files(repo_root, designer_output))
     command_summary = "\n".join(f"- {command}" for command in _known_test_commands(repo_root))
     mode_line = (
-        "Mode: Phase 1 write cycle. Return an implementation summary and a unified diff in a ```diff fenced block."
+        "Mode: Phase 1 write cycle. Return an implementation summary and one or more ```search_replace blocks."
         if apply_writes
         else "Mode: Phase 1 pilot. Return an implementation proposal only; do not claim files were changed."
     )
     if apply_writes:
         extra_rules = (
-            "The unified diff must use git-style headers (diff --git or --- a/... +++ b/...) and apply cleanly to the source excerpts below. "
-            "Do not invent class structures that are not in the excerpts. "
-            "REQUIRED: include a non-empty ```diff fenced block with a git-style unified diff. Empty responses are rejected."
+            "Prefer ```search_replace path blocks with <<<<<<< SEARCH / ======= / >>>>>>> REPLACE sections copied "
+            "exactly from the source excerpts below. Use ```new_file path only for brand-new files. "
+            "Unified ```diff is a last resort for simple single-hunk edits. "
+            "REQUIRED: include at least one applicable search_replace, new_file, or diff block. Empty responses are rejected."
         )
     else:
         extra_rules = "Do not claim tests were run. You may recommend test commands to run later."
@@ -1474,11 +1539,20 @@ def _builder_context(
         command_summary,
     ]
     if apply_writes:
-        snippet_paths = _builder_repo_files(repo_root, designer_output)[:8]
-        scoped_paths = set(_paths_from_designer_spec(designer_output))
-        snippets = _source_snippets(repo_root, snippet_paths, scoped_paths=scoped_paths)
+        primary = primary_implementation_path(designer_output)
+        allowed = allowed_builder_paths(designer_output)
+        if primary:
+            parts.extend(["", f"Primary file (edit ONLY this path unless adding a NEW file): `{primary}`"])
+        snippet_paths = [primary] if primary else _builder_repo_files(repo_root, designer_output)[:8]
+        snippets = _source_snippets(repo_root, snippet_paths, scoped_paths=allowed or set(_paths_from_designer_spec(designer_output)))
         if snippets:
-            parts.extend(["", "Current source excerpts (diffs must apply to this code, not invented classes):", snippets])
+            parts.extend(
+                [
+                    "",
+                    "Current source excerpts (SEARCH blocks must copy text exactly from here):",
+                    snippets,
+                ]
+            )
     return "\n".join(parts)
 
 
@@ -1620,7 +1694,7 @@ def _run_builder(
     role_runner: RoleRunner,
     role_timeout_seconds: int,
     apply_writes: bool = False,
-    diff_validation_issues: list[str] | None = None,
+    patch_validation_issues: list[str] | None = None,
 ) -> str:
     if director_mode == DirectorMode.STATIC:
         return "\n".join(
@@ -1640,16 +1714,16 @@ def _run_builder(
         designer_output,
         apply_writes=apply_writes,
     )
-    if diff_validation_issues:
+    if patch_validation_issues:
         context = "\n".join(
             [
                 context,
                 "",
-                "Your previous unified diff was rejected by diff validation:",
-                *[f"- {issue}" for issue in diff_validation_issues],
+                "Your previous patch was rejected by patch validation:",
+                *[f"- {issue}" for issue in patch_validation_issues],
                 "",
-                "Regenerate the diff using only exact context lines from the source excerpts above. "
-                "Use one hunk per file in top-to-bottom source order.",
+                "Regenerate using ```search_replace blocks with SEARCH text copied exactly from the excerpts above. "
+                "Make the smallest possible edit to the primary file only.",
             ]
         )
     output = role_runner(
@@ -1665,7 +1739,7 @@ def _run_builder(
             roles_dir,
             "builder",
             context
-            + "\n\nYour previous response was rejected because write mode requires a non-empty ```diff fenced block with a unified diff. Try again.",
+            + "\n\nYour previous response was rejected because write mode requires search_replace, new_file, or diff blocks. Try again.",
             timeout_seconds=role_timeout_seconds,
         )
     return output
@@ -1675,9 +1749,11 @@ def _builder_write_mode_issue(builder_output: str) -> str | None:
     if not builder_output.strip():
         return "Builder returned empty output in write mode."
     try:
-        extract_unified_diff(builder_output)
+        patch = extract_builder_patch(builder_output)
     except PatchExtractError as exc:
         return str(exc)
+    if not patch.has_edits():
+        return "Builder output did not include search_replace, new_file, or unified diff blocks."
     return None
 
 
@@ -1953,12 +2029,9 @@ def _run_local_game_build_gate(repo_root: Path) -> list[str]:
 
 def _suggested_write_objective(state_dir: Path, *, before_cycle: int) -> str | None:
     notes = recent_blocker_notes(state_dir, before_cycle=before_cycle).lower()
-    if "diff validation" not in notes and "builder diff validation" not in notes:
+    if "patch validation" not in notes and "diff validation" not in notes and "builder diff validation" not in notes:
         return None
-    return (
-        "Change player starting hp from 10 to 15 in game/src/engine.ts "
-        "and update the matching expectation in game/tests/engine.test.ts."
-    )
+    return "Increase player starting hp from 10 to 15 in game/src/engine.ts createGame()."
 
 
 def _is_verification_only_objective(objective: str) -> bool:

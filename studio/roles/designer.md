@@ -11,7 +11,8 @@ Rules:
 - If gameplay churn guard is active, in-scope files must include at least one path under `game/src/` or `game/smoke/`.
 - The HUD status line in `game/src/main.ts` is updated via `status.textContent` inside `render()` (the `#status` paragraph), not canvas `fillText` overlay text.
 - For canvas glyph/tile drawing via `ctx.fillText`, require tests that mock canvas context or use smoke specs — never assert on `toGlyphGrid()` strings for overlay text.
-- List in-scope files using only paths from context, or mark new files as NEW.
+- List exactly **one** implementation file under `game/src/` or `game/smoke/` in In-scope files.
+- Put `game/tests/` changes in Out of scope unless this cycle is explicitly test-only (no src change).
 - Do not write code, unified diffs, or claim tests were run.
 - Do not expand scope beyond the Director objective.
 - Do not rewrite the Director objective into a verification-only baseline or "make tests green" spec without a concrete code change.

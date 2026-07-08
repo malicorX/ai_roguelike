@@ -84,6 +84,53 @@ class OrchestratorTest(unittest.TestCase):
         self.assertIn("Cycle 1", context)
         self.assertIn("reviewer=REWORK", context)
 
+    def test_run_pilot_cycle_skips_when_report_already_exists(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            repo = Path(tmpdir)
+            state_dir = repo / "studio" / "state"
+            state_dir.mkdir(parents=True)
+            roles_dir = repo / "studio" / "roles"
+            game = repo / "game"
+            game.mkdir(parents=True)
+            roles_dir.mkdir(parents=True)
+            self._write_success_npm(game)
+            prefix = "cycle-0099"
+            (state_dir / f"{prefix}-director.md").write_text("Objective: Done.\n", encoding="utf-8")
+            (state_dir / f"{prefix}-builder.md").write_text("builder\n", encoding="utf-8")
+            (state_dir / f"{prefix}-proposal-lint.json").write_text('{"verdict":"PASS","issues":[]}\n', encoding="utf-8")
+            (state_dir / f"{prefix}-request.json").write_text("{}\n", encoding="utf-8")
+            (state_dir / f"{prefix}-report.json").write_text(
+                json.dumps(
+                    {
+                        "request_branch": "main",
+                        "request_commit": "abc1234",
+                        "qa": {"verdict": "REWORK", "checks": [], "bugs": ["already done"], "repro_steps": []},
+                        "design": {"verdict": "BACKLOG"},
+                    }
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+
+            def fail_runner(*_args, **_kwargs) -> str:
+                raise AssertionError("role runner should not be called")
+
+            with patch("studio.orchestrator._git_output") as git_output:
+                git_output.side_effect = ["main", "abc1234"]
+                result = run_pilot_cycle(
+                    repo,
+                    state_dir,
+                    cycle_number=99,
+                    evaluation_target=EvaluationTarget.LOCAL,
+                    director_mode=DirectorMode.MODEL,
+                    studio_config=StudioConfig.from_model_string("director=test-model"),
+                    roles_dir=roles_dir,
+                    role_runner=fail_runner,
+                )
+
+        self.assertTrue(result.blocked)
+        self.assertEqual(result.blocking_reasons, ["QA requested rework."])
+
     def test_build_evaluation_request_uses_git_identity(self) -> None:
         with patch("studio.orchestrator._git_output") as git_output:
             git_output.side_effect = ["feature/test", "abc1234"]

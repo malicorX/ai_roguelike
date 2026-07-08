@@ -118,6 +118,10 @@ def run_pilot_cycle(
     report_path = state_dir / f"cycle-{cycle_number:04d}-report.json"
     proposal_lint_path = state_dir / f"cycle-{cycle_number:04d}-proposal-lint.json"
 
+    if report_path.is_file():
+        _cycle_log(state_dir, cycle_number, "report already exists; skipping")
+        return _load_pilot_cycle_result(state_dir, cycle_number)
+
     _cycle_log(state_dir, cycle_number, "cycle started")
 
     try:
@@ -443,6 +447,31 @@ def next_cycle_number(state_dir: Path) -> int:
     if not (state_dir / f"cycle-{latest:04d}-report.json").is_file():
         return latest
     return latest + 1
+
+
+def _load_pilot_cycle_result(state_dir: Path, cycle_number: int) -> PilotCycleResult:
+    prefix = f"cycle-{cycle_number:04d}"
+    report_path = state_dir / f"{prefix}-report.json"
+    report = EvaluationReport.from_dict(json.loads(report_path.read_text(encoding="utf-8")))
+    apply_path = state_dir / f"{prefix}-apply.json"
+    merge_path = state_dir / f"{prefix}-merge.json"
+    branch: str | None = None
+    if merge_path.is_file():
+        branch = str(json.loads(merge_path.read_text(encoding="utf-8")).get("branch") or "") or None
+    elif apply_path.is_file():
+        branch = str(json.loads(apply_path.read_text(encoding="utf-8")).get("branch") or "") or None
+    return PilotCycleResult(
+        director_path=state_dir / f"{prefix}-director.md",
+        builder_path=state_dir / f"{prefix}-builder.md",
+        proposal_lint_path=state_dir / f"{prefix}-proposal-lint.json",
+        request_path=state_dir / f"{prefix}-request.json",
+        report_path=report_path,
+        blocked=report.blocks_merge(),
+        blocking_reasons=report.blocking_reasons(),
+        apply_path=apply_path if apply_path.is_file() else None,
+        merge_path=merge_path if merge_path.is_file() else None,
+        branch=branch,
+    )
 
 
 def _cycle_log(state_dir: Path, cycle_number: int, message: str) -> None:

@@ -159,6 +159,104 @@ class PublishDevlogTest(unittest.TestCase):
         self.assertIn("write", cycle_html.lower())
         self.assertIn("MERGED", cycle_html)
 
+    def test_publish_site_renders_specialist_proposal_board(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            repo = Path(tmpdir)
+            state_dir = repo / "studio" / "state"
+            out_dir = repo / "site"
+            (repo / "VISUAL_STYLE.md").write_text("# Visual Style\n", encoding="utf-8")
+            self._write_cycle(
+                state_dir,
+                6,
+                director="Objective: Implement Lantern Leech.",
+                builder="Implementation summary: concept patch.",
+                proposal_lint={"verdict": "PASS", "issues": []},
+                request={"branch": "main", "commit": "abc1234", "objective": "Implement Lantern Leech."},
+                report={"qa": {"verdict": "PASS"}, "design": {"verdict": "BACKLOG"}},
+            )
+            (state_dir / "cycle-0006-proposals.json").write_text(
+                json.dumps(
+                    {
+                        "cycle_number": 6,
+                        "selected_id": "enemy_designer-1",
+                        "proposals": [
+                            {
+                                "id": "enemy_designer-1",
+                                "author_role": "enemy_designer",
+                                "title": "Lantern Leech",
+                                "goal": "Create a monster with a distinct behavior.",
+                            },
+                            {
+                                "id": "art_director_concept-1",
+                                "author_role": "art_director_concept",
+                                "title": "Leech Glow",
+                                "supports": "enemy_designer-1",
+                                "goal": "Make the monster readable at a glance.",
+                            }
+                        ],
+                        "critiques": [
+                            {
+                                "author_role": "qa_critic",
+                                "verdict": "PASS",
+                                "notes": ["Visible and testable."],
+                            }
+                        ],
+                    },
+                    indent=2,
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            (state_dir / "cycle-0006-proposals.md").write_text("# Cycle 0006 Proposal Board\n", encoding="utf-8")
+
+            publish_site(repo, state_dir, out_dir)
+            index_html = (out_dir / "devlog" / "index.html").read_text(encoding="utf-8")
+            cycle_html = (out_dir / "devlog" / "cycle-0006.html").read_text(encoding="utf-8")
+            proposal_artifact_exists = (out_dir / "devlog" / "artifacts" / "cycle-0006-proposals.json").is_file()
+
+        self.assertIn("enemy_designer", index_html)
+        self.assertIn("Phase 1", cycle_html)
+        self.assertIn("Lantern Leech", cycle_html)
+        self.assertIn("enemy_designer-1", cycle_html)
+        self.assertIn("Leech Glow", cycle_html)
+        self.assertTrue(proposal_artifact_exists)
+
+    def test_publish_site_renders_cycle_overview_and_folds(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            repo = Path(tmpdir)
+            state_dir = repo / "studio" / "state"
+            out_dir = repo / "site"
+            self._write_cycle(
+                state_dir,
+                9,
+                director="Proposal: enemy_designer-1\nObjective: Implement The Bouncer.\n",
+                builder="Implementation summary: add bouncer push.",
+                proposal_lint={"verdict": "PASS", "issues": []},
+                request={"branch": "main", "commit": "abc1234", "objective": "Implement The Bouncer."},
+                report={"qa": {"verdict": "REWORK", "bugs": ["patch failed"]}, "design": {"verdict": "BACKLOG"}},
+                reviewer={"verdict": "REWORK", "issues": ["patch context mismatch"]},
+                proposals={
+                    "selected_id": "enemy_designer-1",
+                    "proposals": [
+                        {
+                            "id": "enemy_designer-1",
+                            "author_role": "enemy_designer",
+                            "title": "The Bouncer",
+                            "goal": "Push player on hit.",
+                        }
+                    ],
+                    "critiques": [{"author_role": "qa_critic", "verdict": "PASS", "notes": ["Concrete."]}],
+                },
+            )
+
+            publish_site(repo, state_dir, out_dir)
+            cycle_html = (out_dir / "devlog" / "cycle-0009.html").read_text(encoding="utf-8")
+
+        self.assertIn("At a glance", cycle_html)
+        self.assertIn("<details class=\"fold\"", cycle_html)
+        self.assertIn("The Bouncer", cycle_html)
+        self.assertIn("no change", cycle_html.lower())
+
     def _write_cycle(
         self,
         state_dir: Path,
@@ -169,6 +267,8 @@ class PublishDevlogTest(unittest.TestCase):
         proposal_lint: dict,
         request: dict,
         report: dict | None,
+        reviewer: dict | None = None,
+        proposals: dict | None = None,
     ) -> None:
         state_dir.mkdir(parents=True, exist_ok=True)
         prefix = f"cycle-{number:04d}"
@@ -178,6 +278,10 @@ class PublishDevlogTest(unittest.TestCase):
         (state_dir / f"{prefix}-request.json").write_text(json.dumps(request, indent=2) + "\n", encoding="utf-8")
         if report is not None:
             (state_dir / f"{prefix}-report.json").write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
+        if reviewer is not None:
+            (state_dir / f"{prefix}-reviewer.json").write_text(json.dumps(reviewer, indent=2) + "\n", encoding="utf-8")
+        if proposals is not None:
+            (state_dir / f"{prefix}-proposals.json").write_text(json.dumps(proposals, indent=2) + "\n", encoding="utf-8")
 
 
 if __name__ == "__main__":

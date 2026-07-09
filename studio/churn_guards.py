@@ -6,13 +6,6 @@ from pathlib import Path
 
 MAX_CONSECUTIVE_TEST_ONLY_MERGES = 1
 
-GAMEPLAY_OBJECTIVE_SEEDS = (
-    "Make each enemy move one tile toward the player after every player action in game/src/engine.ts.",
-    "Add a second enemy to the starting room in game/src/engine.ts createGame().",
-    "Increase player starting hp from 10 to 15 in game/src/engine.ts and update game/tests/engine.test.ts.",
-    "Show the enemy count on the HUD status line in game/src/main.ts.",
-)
-
 PLAYER_VISIBLE_PREFIXES = (
     "game/src/engine.ts",
     "game/src/main.ts",
@@ -161,10 +154,7 @@ def is_test_only_designer_spec(text: str) -> bool:
 
 
 def mandatory_gameplay_objective(state_dir: Path, *, before_cycle: int) -> str | None:
-    if not requires_src_change(state_dir, before_cycle=before_cycle):
-        return None
-    seed_index = (before_cycle - 1) % len(GAMEPLAY_OBJECTIVE_SEEDS)
-    return GAMEPLAY_OBJECTIVE_SEEDS[seed_index]
+    return None
 
 
 def churn_director_notes(state_dir: Path, *, before_cycle: int) -> list[str]:
@@ -173,11 +163,9 @@ def churn_director_notes(state_dir: Path, *, before_cycle: int) -> list[str]:
         return []
     lines = [
         f"Recent merged cycles: {streak} consecutive test-only merge(s) (game/tests/ only).",
-        "Next cycle MUST include a player-visible change under game/src/ or game/smoke/.",
-        "Do NOT pick another test-only objective.",
+        "Next cycle MUST advance a specialist proposal with player-visible impact.",
+        "Do NOT pick another test-only objective or a numeric-only stat tweak.",
     ]
-    if mandatory := mandatory_gameplay_objective(state_dir, before_cycle=before_cycle):
-        lines.extend(["", "Mandatory gameplay objective candidate:", mandatory])
     return lines
 
 

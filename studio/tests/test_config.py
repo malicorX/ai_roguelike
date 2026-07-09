@@ -1,6 +1,7 @@
 import unittest
+import unittest.mock
 
-from studio.config import DEFAULT_MODEL, StudioConfig, parse_model_assignments
+from studio.config import DEFAULT_MODEL, StudioConfig, parse_model_assignments, prefer_nvidia_models
 
 
 class StudioConfigTest(unittest.TestCase):
@@ -25,6 +26,12 @@ class StudioConfigTest(unittest.TestCase):
         self.assertEqual(config.model_for("builder"), DEFAULT_MODEL)
         self.assertEqual(config.ollama_base_url_for("director"), "http://127.0.0.1:11434")
         self.assertEqual(config.ollama_base_url_for("player"), "http://sparky2:11435")
+
+    def test_prefer_nvidia_models_auto_uses_key_presence(self) -> None:
+        with unittest.mock.patch.dict("os.environ", {"STUDIO_PREFER_NVIDIA": "auto", "NVIDIA_API_KEY": "nvapi-test"}, clear=False):
+            self.assertTrue(prefer_nvidia_models())
+        with unittest.mock.patch.dict("os.environ", {"STUDIO_PREFER_NVIDIA": "auto"}, clear=True):
+            self.assertFalse(prefer_nvidia_models())
 
 
 if __name__ == "__main__":

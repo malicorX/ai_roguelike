@@ -27,6 +27,7 @@ class CycleRecord:
     apply: dict[str, Any]
     merge: dict[str, Any]
     critic: dict[str, Any]
+    proposals: dict[str, Any]
     blocked: bool
     blocking_reasons: list[str]
     mode: str
@@ -43,6 +44,10 @@ class PublishResult:
 def load_cycles(state_dir: Path) -> list[CycleRecord]:
     cycle_numbers = sorted(_discover_cycle_numbers(state_dir))
     return [_load_cycle(state_dir, number) for number in cycle_numbers]
+
+
+def load_cycle(state_dir: Path, cycle_number: int) -> CycleRecord:
+    return _load_cycle(state_dir, cycle_number)
 
 
 def publish_site(repo_root: Path, state_dir: Path, out_dir: Path) -> PublishResult:
@@ -103,10 +108,11 @@ def _discover_cycle_numbers(state_dir: Path) -> set[int]:
     numbers: set[int] = set()
     if not state_dir.is_dir():
         return numbers
-    for path in state_dir.glob("cycle-*-director.md"):
-        match = re.match(r"cycle-(\d+)-director\.md$", path.name)
-        if match:
-            numbers.add(int(match.group(1)))
+    for pattern in ("cycle-*-director.md", "cycle-*-proposals.json"):
+        for path in state_dir.glob(pattern):
+            match = re.match(r"cycle-(\d+)-(?:director\.md|proposals\.json)$", path.name)
+            if match:
+                numbers.add(int(match.group(1)))
     return numbers
 
 
@@ -122,10 +128,11 @@ def _load_cycle(state_dir: Path, number: int) -> CycleRecord:
     apply = _read_json(state_dir / f"{prefix}-apply.json")
     merge = _read_json(state_dir / f"{prefix}-merge.json")
     critic = _read_json(state_dir / f"{prefix}-critic.json")
-    objective = str(request.get("objective") or _objective_from_director(director))
-    mode = "write" if apply or merge or "write cycle" in str(request.get("spec", "")).lower() else "proposal"
-    blocked, reasons = _cycle_status(proposal_lint, report, reviewer=reviewer, apply=apply, merge=merge)
-    roles_run = _roles_run(director, designer, builder, reviewer, report)
+    proposals = _read_json(state_dir / f"{prefix}-proposals.json")
+    objective = str(request.get("objective") or _objective_from_director(director) or _objective_from_proposals(proposals))
+    mode = "proposal-board" if proposals and not request and not director.strip() else "write" if apply or merge or "write cycle" in str(request.get("spec", "")).lower() else "proposal"
+    blocked, reasons = _cycle_status(proposal_lint, report, reviewer=reviewer, apply=apply, merge=merge, proposals=proposals)
+    roles_run = _roles_run(director, designer, builder, reviewer, report, proposals)
     return CycleRecord(
         number=number,
         objective=objective,
@@ -141,6 +148,7 @@ def _load_cycle(state_dir: Path, number: int) -> CycleRecord:
         apply=apply,
         merge=merge,
         critic=critic,
+        proposals=proposals,
         blocked=blocked,
         blocking_reasons=reasons,
         mode=mode,
@@ -154,8 +162,21 @@ def _roles_run(
     builder: str,
     reviewer: dict[str, Any],
     report: dict[str, Any],
+    proposals: dict[str, Any],
 ) -> list[str]:
     roles: list[str] = []
+    proposal_items = proposals.get("proposals", [])
+    if not isinstance(proposal_items, list):
+        proposal_items = []
+    critique_items = proposals.get("critiques", [])
+    if not isinstance(critique_items, list):
+        critique_items = []
+    for proposal in proposal_items:
+        if isinstance(proposal, dict) and proposal.get("author_role"):
+            roles.append(str(proposal["author_role"]))
+    for critique in critique_items:
+        if isinstance(critique, dict) and critique.get("author_role"):
+            roles.append(f"{critique['author_role']}:{critique.get('verdict', '?')}")
     if director.strip():
         roles.append("director")
     if designer.strip():
@@ -176,6 +197,7 @@ def _cycle_status(
     reviewer: dict[str, Any] | None = None,
     apply: dict[str, Any] | None = None,
     merge: dict[str, Any] | None = None,
+    proposals: dict[str, Any] | None = None,
 ) -> tuple[bool, list[str]]:
     reasons: list[str] = []
     if proposal_lint.get("verdict") == "REWORK":
@@ -184,6 +206,9 @@ def _cycle_status(
     if reviewer and reviewer.get("verdict") == "REWORK":
         reasons.append("Reviewer requested rework.")
         reasons.extend(str(issue) for issue in reviewer.get("issues", []))
+    if not report and proposals:
+        proposal_issues = _proposal_board_issues(proposals)
+        return bool(proposal_issues), proposal_issues
     if not report:
         reasons.append("Evaluation report missing.")
         return True, reasons
@@ -199,6 +224,34 @@ def _cycle_status(
     return bool(reasons), reasons
 
 
+def _objective_from_proposals(proposals: dict[str, Any]) -> str:
+    selected_id = str(proposals.get("selected_id", "")).strip()
+    proposal_items = proposals.get("proposals", [])
+    if not isinstance(proposal_items, list):
+        return "Specialist proposal board"
+    for proposal in proposal_items:
+        if isinstance(proposal, dict) and proposal.get("id") == selected_id:
+            title = str(proposal.get("title", "")).strip()
+            return f"Proposal: {title}" if title else "Specialist proposal board"
+    return "Specialist proposal board"
+
+
+def _proposal_board_issues(proposals: dict[str, Any]) -> list[str]:
+    selected_id = str(proposals.get("selected_id", "")).strip()
+    proposal_items = proposals.get("proposals", [])
+    critiques = proposals.get("critiques", [])
+    issues: list[str] = []
+    if not selected_id:
+        issues.append("Proposal board did not select a proposal.")
+    if not isinstance(proposal_items, list) or not proposal_items:
+        issues.append("Proposal board did not include specialist proposals.")
+    if isinstance(critiques, list):
+        for critique in critiques:
+            if isinstance(critique, dict) and str(critique.get("verdict", "")).upper() == "BLOCK":
+                issues.append(f"{critique.get('author_role', 'critic')} blocked proposal board.")
+    return issues
+
+
 def _copy_cycle_artifacts(state_dir: Path, artifacts_dir: Path, number: int) -> None:
     prefix = f"cycle-{number:04d}"
     for suffix in (
@@ -212,6 +265,9 @@ def _copy_cycle_artifacts(state_dir: Path, artifacts_dir: Path, number: int) -> 
         "apply.json",
         "merge.json",
         "critic.json",
+        "proposals.json",
+        "proposals.md",
+        "process.md",
         "run.log",
     ):
         source = state_dir / f"{prefix}-{suffix}"
@@ -251,8 +307,8 @@ def _render_devlog_index(cycles: list[CycleRecord]) -> str:
   <div class="pipeline">
     <article class="pipeline-lane sparky1">
       <p class="lane-label">sparky1 · development</p>
-      <p>Director picks the objective. Builder proposes or writes a diff. Proposal lint and (in write mode) git apply/merge all run on the studio machine.</p>
-      <p class="lane-artifacts">Artifacts: <code>director.md</code>, <code>designer.md</code>, <code>builder.md</code>, <code>reviewer.json</code>, <code>proposal-lint.json</code>, <code>critic.json</code>, optional <code>apply.json</code> / <code>merge.json</code></p>
+      <p>Specialist agents pitch concepts, QA critiques them, Director selects the proposal, and Builder implements the accepted concept. Proposal lint and (in write mode) git apply/merge all run on the studio machine.</p>
+      <p class="lane-artifacts">Artifacts: <code>proposals.json</code>, <code>proposals.md</code>, <code>director.md</code>, <code>designer.md</code>, <code>builder.md</code>, <code>reviewer.json</code>, <code>proposal-lint.json</code>, <code>critic.json</code>, optional <code>apply.json</code> / <code>merge.json</code></p>
     </article>
     <article class="pipeline-lane handoff">
       <p class="lane-label">handoff · transport</p>
@@ -280,9 +336,10 @@ def _render_devlog_index(cycles: list[CycleRecord]) -> str:
 <section class="panel">
   <h2>How to read a cycle</h2>
   <ol>
-    <li><strong>sparky1 · Director</strong> — chooses the objective.</li>
-    <li><strong>sparky1 · Designer</strong> — writes acceptance criteria and in-scope files (soul: <code>roles/designer.md</code>).</li>
-    <li><strong>sparky1 · Builder</strong> — proposal or unified diff from the Designer spec only.</li>
+    <li><strong>sparky1 · Specialists</strong> — Enemy Designer, Systems Designer, and Art Director pitch concepts; QA Critic reviews them before code.</li>
+    <li><strong>sparky1 · Director</strong> — chooses the accepted proposal to advance.</li>
+    <li><strong>sparky1 · Designer</strong> — writes acceptance criteria and in-scope files from the selected proposal (soul: <code>roles/designer.md</code>).</li>
+    <li><strong>sparky1 · Builder</strong> — implements the accepted proposal from the Designer spec.</li>
     <li><strong>sparky1 · Reviewer</strong> — PASS/REWORK gate before apply or sparky2 (soul: <code>roles/reviewer.md</code>).</li>
     <li><strong>sparky1 · Proposal lint</strong> — blocks invented paths and unknown test commands.</li>
     <li><strong>sparky1 · Cycle critic</strong> — scores the finished cycle (player-visible impact, mechanics, tests, scope) and sets the next-cycle constraint for Director.</li>
@@ -305,6 +362,14 @@ class CyclePhases:
 
 def _cycle_phases(cycle: CycleRecord) -> CyclePhases:
     sparky1_parts: list[str] = []
+    proposal_items = cycle.proposals.get("proposals", [])
+    if isinstance(proposal_items, list) and proposal_items:
+        sparky1_parts.append("Proposal board")
+    critique_items = cycle.proposals.get("critiques", [])
+    if isinstance(critique_items, list):
+        for critique in critique_items:
+            if isinstance(critique, dict) and critique.get("verdict"):
+                sparky1_parts.append(f"{critique.get('author_role', 'critic')} {critique.get('verdict')}")
     if cycle.director.strip():
         sparky1_parts.append("Director")
     if cycle.designer.strip():
@@ -370,31 +435,67 @@ def _render_cycle_page(cycle: CycleRecord) -> str:
     design = cycle.report.get("design", {})
     apply = cycle.apply
     merge = cycle.merge
-    critic_section = _render_critic_section(cycle)
-    write_section = ""
+    overview = _render_cycle_overview(cycle, phases)
+    proposal_fold = _fold(
+        "Phase 1 · Specialist proposals",
+        _proposal_fold_summary(cycle),
+        _render_proposal_body(cycle),
+    )
+    director_fold = _fold(
+        "Phase 2 · Director selection",
+        _director_fold_summary(cycle),
+        _render_director_body(cycle),
+    )
+    designer_fold = _fold(
+        "Phase 3 · Designer spec",
+        _designer_fold_summary(cycle),
+        _render_designer_body(cycle),
+    )
+    builder_fold = _fold(
+        "Phase 4 · Builder implementation",
+        _builder_fold_summary(cycle),
+        _render_builder_body(cycle, lint_issues),
+    )
+    reviewer_fold = _fold(
+        "Phase 5 · Reviewer gate",
+        _reviewer_fold_summary(cycle),
+        _render_reviewer_body(cycle),
+    )
+    evaluation_fold = _fold(
+        "Phase 6 · sparky2 evaluation",
+        _evaluation_fold_summary(cycle),
+        _render_evaluation_body(cycle, qa, design),
+    )
+    handoff_fold = _fold(
+        "Handoff request",
+        _handoff_fold_summary(cycle),
+        f'<pre>{_esc(json.dumps(cycle.request, indent=2))}</pre><p><a href="./artifacts/cycle-{cycle.number:04d}-request.json">raw artifact</a></p>',
+        open_by_default=False,
+    )
+    critic_fold = _fold(
+        "Cycle critic scores",
+        _critic_fold_summary(cycle),
+        _render_critic_body(cycle),
+        open_by_default=False,
+    )
+    write_fold = ""
     if apply or merge:
-        write_section = f"""
-<section class="panel">
-  <h3>sparky1 · Write cycle</h3>
-  <p>Mode: <strong>{_esc(cycle.mode)}</strong></p>
-  {"<p>Apply verdict: <strong>" + _esc(str(apply.get("verdict", "n/a"))) + "</strong></p>" if apply else ""}
-  {"<p>Merge verdict: <strong>" + _esc(str(merge.get("verdict", "n/a"))) + "</strong></p>" if merge else ""}
-  {"<pre>" + _esc(json.dumps(apply, indent=2)) + "</pre>" if apply else ""}
-  {"<pre>" + _esc(json.dumps(merge, indent=2)) + "</pre>" if merge else ""}
-  {"<p><a href=\"./artifacts/cycle-" + f"{cycle.number:04d}" + "-apply.json\">apply artifact</a></p>" if apply else ""}
-  {"<p><a href=\"./artifacts/cycle-" + f"{cycle.number:04d}" + "-merge.json\">merge artifact</a></p>" if merge else ""}
-</section>
-"""
+        write_fold = _fold(
+            "Apply, merge, deploy",
+            _write_fold_summary(cycle),
+            _render_write_body(cycle, apply, merge),
+            open_by_default=False,
+        )
     body = f"""
-<section class="panel hero">
+<section class="panel hero compact-hero">
   <p><a href="./index.html">← Back to devlog</a></p>
   <h2>Cycle {cycle.number}</h2>
   <p class="lede">{_esc(cycle.objective)}</p>
   <p><span class="status {status}">{status}</span> <code>{_esc(cycle.branch)}@{_esc(cycle.commit)}</code> · {_esc(cycle.mode)}</p>
-  {"<ul>" + "".join(f"<li>{_esc(reason)}</li>" for reason in cycle.blocking_reasons) + "</ul>" if cycle.blocking_reasons else ""}
 </section>
+{overview}
 <section class="panel">
-  <h2>Cycle pipeline</h2>
+  <h2>Pipeline</h2>
   <div class="pipeline compact">
     <article class="pipeline-lane sparky1">
       <p class="lane-label">sparky1</p>
@@ -410,62 +511,327 @@ def _render_cycle_page(cycle: CycleRecord) -> str:
     </article>
   </div>
 </section>
-<section class="grid two">
-  <article class="panel">
-    <h3>sparky1 · Director</h3>
-    <pre>{_esc(cycle.director)}</pre>
-    <p><a href="./artifacts/cycle-{cycle.number:04d}-director.md">raw artifact</a></p>
-  </article>
-  <article class="panel">
-    <h3>sparky1 · Designer spec</h3>
-    <pre>{_esc(cycle.designer) if cycle.designer.strip() else "—"}</pre>
-    <p><a href="./artifacts/cycle-{cycle.number:04d}-designer.md">raw artifact</a></p>
-  </article>
-</section>
-<section class="grid two">
-  <article class="panel">
-    <h3>sparky1 · Builder proposal</h3>
-    <pre>{_esc(cycle.builder)}</pre>
-    <p><a href="./artifacts/cycle-{cycle.number:04d}-builder.md">raw artifact</a></p>
-  </article>
-  <article class="panel">
-    <h3>sparky1 · Reviewer gate</h3>
-    <p>Verdict: <strong>{_esc(str(cycle.reviewer.get("verdict", "unknown")))}</strong></p>
-    {"<ul>" + "".join(f"<li>{_esc(str(issue))}</li>" for issue in cycle.reviewer.get("issues", [])) + "</ul>" if cycle.reviewer.get("issues") else "<p>No reviewer issues.</p>" if cycle.reviewer.get("verdict") else "<p>Reviewer did not run.</p>"}
-    <p><a href="./artifacts/cycle-{cycle.number:04d}-reviewer.json">raw artifact</a></p>
-  </article>
-</section>
-<section class="grid two">
-  <article class="panel">
-    <h3>sparky1 · Proposal lint</h3>
-    <p>Verdict: <strong>{_esc(str(cycle.proposal_lint.get("verdict", "unknown")))}</strong></p>
-    {"<ul>" + "".join(f"<li>{_esc(str(issue))}</li>" for issue in lint_issues) + "</ul>" if lint_issues else "<p>No lint issues.</p>"}
-    <p><a href="./artifacts/cycle-{cycle.number:04d}-proposal-lint.json">raw artifact</a></p>
-  </article>
-  <article class="panel">
-    <h3>sparky1 → sparky2 · Handoff (request)</h3>
-    <p class="lane-note">Transport only: <code>request.json</code> is copied to sparky2 before gates run.</p>
-    <pre>{_esc(json.dumps(cycle.request, indent=2))}</pre>
-    <p><a href="./artifacts/cycle-{cycle.number:04d}-request.json">raw artifact</a></p>
-  </article>
-</section>
-<section class="panel">
-  <h3>sparky2 · Evaluation report (gates)</h3>
-  <p class="lane-note">Playtesting and automated gates run on sparky2 against the candidate commit; results return as <code>report.json</code>.</p>
-  <p>QA verdict: <strong>{_esc(str(qa.get("verdict", "unknown")))}</strong> · Design verdict: <strong>{_esc(str(design.get("verdict", "unknown")))}</strong></p>
-  <pre>{_esc(json.dumps(cycle.report, indent=2))}</pre>
-  <p><a href="./artifacts/cycle-{cycle.number:04d}-report.json">raw artifact</a></p>
-</section>
-{critic_section}
-{write_section}
+{proposal_fold}
+{director_fold}
+{designer_fold}
+{builder_fold}
+{reviewer_fold}
+{evaluation_fold}
+{handoff_fold}
+{critic_fold}
+{write_fold}
+<p class="artifact-links"><a href="./artifacts/cycle-{cycle.number:04d}-process.md">Full process report (markdown)</a></p>
 """
     return _page_shell(
         title=f"Cycle {cycle.number} · ai_roguelike devlog",
         active_nav="devlog",
         heading=f"Cycle {cycle.number}",
-        subtitle="Director, Builder, lint, sparky2 report, and cycle critic scores for one studio cycle.",
+        subtitle="Overview first, then expand any phase for the full agent artifacts.",
         body=body,
     )
+
+
+def _fold(title: str, summary: str, body: str, *, open_by_default: bool = True) -> str:
+    open_attr = " open" if open_by_default else ""
+    return f"""
+<details class="fold"{open_attr}>
+  <summary><span class="fold-title">{_esc(title)}</span><span class="fold-hint">{_esc(summary)}</span></summary>
+  <div class="fold-body">{body}</div>
+</details>
+"""
+
+
+def _render_cycle_overview(cycle: CycleRecord, phases: CyclePhases) -> str:
+    selected = _selected_proposal_label(cycle)
+    game_impact = _game_impact_line(cycle)
+    blocker = _primary_blocker(cycle)
+    rows = [
+        f"<li><strong>Outcome:</strong> {_esc(_outcome_label(cycle))}</li>",
+        f"<li><strong>Selected concept:</strong> {_esc(selected)}</li>",
+        f"<li><strong>Playable game:</strong> {_esc(game_impact)}</li>",
+        f"<li><strong>Pipeline:</strong> {_esc(phases.sparky1)}</li>",
+    ]
+    if blocker:
+        rows.append(f"<li><strong>Stopped because:</strong> {_esc(blocker)}</li>")
+    if cycle.blocking_reasons:
+        reason_items = "".join(f"<li>{_esc(reason)}</li>" for reason in cycle.blocking_reasons[:4])
+        extra = len(cycle.blocking_reasons) - 4
+        if extra > 0:
+            reason_items += f"<li>…and {extra} more (expand Reviewer / Evaluation below)</li>"
+        rows.append(f"<li><strong>Details:</strong><ul class=\"overview-sublist\">{reason_items}</ul></li>")
+    return f"""
+<section class="panel overview">
+  <h2>At a glance</h2>
+  <ul class="overview-list">{''.join(rows)}</ul>
+</section>
+"""
+
+
+def _outcome_label(cycle: CycleRecord) -> str:
+    if str(cycle.merge.get("verdict", "")).upper() == "MERGED":
+        return "Merged and deployed"
+    if cycle.blocked:
+        reviewer = str(cycle.reviewer.get("verdict", "")).upper()
+        if reviewer == "REWORK":
+            return "Blocked at reviewer gate"
+        qa = str(cycle.report.get("qa", {}).get("verdict", "")).upper()
+        if qa == "REWORK":
+            return "Blocked at evaluation"
+        if cycle.proposals and not cycle.director.strip():
+            return "Blocked at proposal board"
+        return "Blocked before deploy"
+    return "Completed"
+
+
+def _game_impact_line(cycle: CycleRecord) -> str:
+    if str(cycle.merge.get("verdict", "")).upper() == "MERGED":
+        return "Updated on theebie — open Play to try it"
+    if cycle.mode == "proposal-board":
+        return "No code written (proposal-only cycle)"
+    if cycle.blocked:
+        return "No change — code never merged or deployed"
+    return "Check merge/deploy artifacts"
+
+
+def _primary_blocker(cycle: CycleRecord) -> str:
+    if cycle.blocking_reasons:
+        return cycle.blocking_reasons[0]
+    return ""
+
+
+def _selected_proposal_label(cycle: CycleRecord) -> str:
+    proposals = cycle.proposals
+    if not proposals:
+        return cycle.objective or "—"
+    selected_id = str(proposals.get("selected_id", "")).strip()
+    items = proposals.get("proposals", [])
+    if not isinstance(items, list):
+        return selected_id or cycle.objective or "—"
+    for item in items:
+        if isinstance(item, dict) and item.get("id") == selected_id:
+            title = str(item.get("title", "")).strip()
+            role = str(item.get("author_role", "")).strip()
+            return f"{title} ({role})" if title else selected_id
+    return selected_id or cycle.objective or "—"
+
+
+def _proposal_fold_summary(cycle: CycleRecord) -> str:
+    proposals = cycle.proposals
+    if not proposals:
+        return "No proposal board"
+    items = proposals.get("proposals", [])
+    critiques = proposals.get("critiques", [])
+    pitch_count = len(items) if isinstance(items, list) else 0
+    qa_verdict = "?"
+    if isinstance(critiques, list):
+        for critique in critiques:
+            if isinstance(critique, dict) and critique.get("author_role") == "qa_critic":
+                qa_verdict = str(critique.get("verdict", "?"))
+    return f"{pitch_count} pitches · QA {qa_verdict} · selected {_selected_proposal_label(cycle)}"
+
+
+def _director_fold_summary(cycle: CycleRecord) -> str:
+    if not cycle.director.strip():
+        return "Did not run"
+    objective = _objective_from_director(cycle.director) or cycle.objective
+    return objective[:100] + ("…" if len(objective) > 100 else "")
+
+
+def _designer_fold_summary(cycle: CycleRecord) -> str:
+    if not cycle.designer.strip():
+        return "Did not run"
+    return "Spec written — expand for files and acceptance criteria"
+
+
+def _builder_fold_summary(cycle: CycleRecord) -> str:
+    if not cycle.builder.strip():
+        return "Did not run"
+    lint = str(cycle.proposal_lint.get("verdict", "?"))
+    return f"Lint {lint} — expand for patches and summary"
+
+
+def _reviewer_fold_summary(cycle: CycleRecord) -> str:
+    verdict = str(cycle.reviewer.get("verdict", "")).strip() or "did not run"
+    issues = cycle.reviewer.get("issues", [])
+    if isinstance(issues, list) and issues:
+        return f"{verdict} — {issues[0]}"
+    return verdict
+
+
+def _evaluation_fold_summary(cycle: CycleRecord) -> str:
+    if not cycle.report:
+        return "No evaluation report"
+    qa = str(cycle.report.get("qa", {}).get("verdict", "?"))
+    design = str(cycle.report.get("design", {}).get("verdict", "?"))
+    return f"QA {qa} · Design {design}"
+
+
+def _handoff_fold_summary(cycle: CycleRecord) -> str:
+    if not cycle.request:
+        return "No handoff"
+    return f"{cycle.request.get('branch', 'main')} @ {cycle.request.get('commit', '?')}"
+
+
+def _critic_fold_summary(cycle: CycleRecord) -> str:
+    scores = cycle.critic.get("scores", {})
+    if not isinstance(scores, dict) or not scores:
+        return "No scores"
+    lowest = min(scores, key=lambda key: int(scores[key]))
+    return f"Lowest: {_critic_dimension_label(str(lowest))} {scores[lowest]}/5"
+
+
+def _write_fold_summary(cycle: CycleRecord) -> str:
+    merge = str(cycle.merge.get("verdict", "not merged"))
+    apply = str(cycle.apply.get("verdict", "n/a")) if cycle.apply else "n/a"
+    return f"Apply {apply} · Merge {merge}"
+
+
+def _render_director_body(cycle: CycleRecord) -> str:
+    if not cycle.director.strip():
+        return "<p>Director did not run.</p>"
+    return f'<pre>{_esc(cycle.director)}</pre><p><a href="./artifacts/cycle-{cycle.number:04d}-director.md">raw artifact</a></p>'
+
+
+def _render_designer_body(cycle: CycleRecord) -> str:
+    if not cycle.designer.strip():
+        return "<p>Designer did not run.</p>"
+    return f'<pre>{_esc(cycle.designer)}</pre><p><a href="./artifacts/cycle-{cycle.number:04d}-designer.md">raw artifact</a></p>'
+
+
+def _render_builder_body(cycle: CycleRecord, lint_issues: list[Any]) -> str:
+    if not cycle.builder.strip():
+        return "<p>Builder did not run.</p>"
+    lint = cycle.proposal_lint.get("verdict", "unknown")
+    issues_html = (
+        "<ul>" + "".join(f"<li>{_esc(str(issue))}</li>" for issue in lint_issues) + "</ul>"
+        if lint_issues
+        else "<p>No lint issues.</p>"
+    )
+    return (
+        f"<p>Proposal lint: <strong>{_esc(str(lint))}</strong></p>{issues_html}"
+        f'<pre>{_esc(cycle.builder)}</pre>'
+        f'<p><a href="./artifacts/cycle-{cycle.number:04d}-builder.md">raw artifact</a> · '
+        f'<a href="./artifacts/cycle-{cycle.number:04d}-proposal-lint.json">lint json</a></p>'
+    )
+
+
+def _render_reviewer_body(cycle: CycleRecord) -> str:
+    verdict = str(cycle.reviewer.get("verdict", "")).strip()
+    if not verdict:
+        return "<p>Reviewer did not run.</p>"
+    issues = cycle.reviewer.get("issues", [])
+    issues_html = (
+        "<ul>" + "".join(f"<li>{_esc(str(issue))}</li>" for issue in issues) + "</ul>"
+        if isinstance(issues, list) and issues
+        else "<p>No reviewer issues.</p>"
+    )
+    return (
+        f"<p>Verdict: <strong>{_esc(verdict)}</strong></p>{issues_html}"
+        f'<p><a href="./artifacts/cycle-{cycle.number:04d}-reviewer.json">raw artifact</a></p>'
+    )
+
+
+def _render_evaluation_body(cycle: CycleRecord, qa: dict[str, Any], design: dict[str, Any]) -> str:
+    if not cycle.report:
+        return "<p>No evaluation report.</p>"
+    return (
+        f'<p>QA verdict: <strong>{_esc(str(qa.get("verdict", "unknown")))}</strong> · '
+        f'Design verdict: <strong>{_esc(str(design.get("verdict", "unknown")))}</strong></p>'
+        f'<pre>{_esc(json.dumps(cycle.report, indent=2))}</pre>'
+        f'<p><a href="./artifacts/cycle-{cycle.number:04d}-report.json">raw artifact</a></p>'
+    )
+
+
+def _render_write_body(cycle: CycleRecord, apply: dict[str, Any], merge: dict[str, Any]) -> str:
+    parts = [f"<p>Mode: <strong>{_esc(cycle.mode)}</strong></p>"]
+    if apply:
+        parts.append(f"<p>Apply verdict: <strong>{_esc(str(apply.get('verdict', 'n/a')))}</strong></p>")
+        parts.append(f"<pre>{_esc(json.dumps(apply, indent=2))}</pre>")
+        parts.append(f'<p><a href="./artifacts/cycle-{cycle.number:04d}-apply.json">apply artifact</a></p>')
+    if merge:
+        parts.append(f"<p>Merge verdict: <strong>{_esc(str(merge.get('verdict', 'n/a')))}</strong></p>")
+        parts.append(f"<pre>{_esc(json.dumps(merge, indent=2))}</pre>")
+        parts.append(f'<p><a href="./artifacts/cycle-{cycle.number:04d}-merge.json">merge artifact</a></p>')
+    return "".join(parts)
+
+
+def _render_critic_body(cycle: CycleRecord) -> str:
+    critic = cycle.critic
+    if not critic:
+        return "<p>No critic artifact for this cycle.</p>"
+    scores = critic.get("scores", {})
+    constraint = str(critic.get("next_cycle_constraint", "")).strip()
+    source = str(critic.get("source", "unknown")).strip()
+    score_rows = ""
+    if isinstance(scores, dict) and scores:
+        score_rows = "".join(
+            "<tr>"
+            f"<td>{_esc(_critic_dimension_label(str(name)))}</td>"
+            f"<td><span class=\"critic-score\">{_esc(str(value))}/5</span></td>"
+            f"<td><div class=\"critic-bar\"><span style=\"width:{_critic_bar_width(int(value))}%\"></span></div></td>"
+            "</tr>"
+            for name, value in scores.items()
+            if str(name).strip()
+        )
+    scores_table = (
+        f"<table class=\"critic-table\"><thead><tr><th>Dimension</th><th>Score</th><th></th></tr></thead><tbody>{score_rows}</tbody></table>"
+        if score_rows
+        else "<p>No scores recorded.</p>"
+    )
+    constraint_block = (
+        f"<p><strong>Next-cycle constraint:</strong> {_esc(constraint)}</p>" if constraint else ""
+    )
+    return (
+        f"<p class=\"lane-note\">Source: <code>{_esc(source)}</code></p>{scores_table}{constraint_block}"
+        f'<p><a href="./artifacts/cycle-{cycle.number:04d}-critic.json">raw artifact</a></p>'
+    )
+
+
+def _render_proposal_body(cycle: CycleRecord) -> str:
+    proposals = cycle.proposals
+    if not proposals:
+        return "<p>No proposal board artifact for this cycle.</p>"
+    selected_id = str(proposals.get("selected_id", "")).strip()
+    proposal_items = proposals.get("proposals", [])
+    critique_items = proposals.get("critiques", [])
+    if not isinstance(proposal_items, list):
+        proposal_items = []
+    if not isinstance(critique_items, list):
+        critique_items = []
+    proposal_rows = "".join(
+        "<tr>"
+        f"<td>{_esc(str(item.get('id', '')))}</td>"
+        f"<td>{_esc(str(item.get('author_role', '')))}</td>"
+        f"<td>{_esc(str(item.get('title', '')))}</td>"
+        f"<td>{_esc(str(item.get('supports') or '—'))}</td>"
+        f"<td>{_esc(str(item.get('goal', '')))}</td>"
+        "</tr>"
+        for item in proposal_items
+        if isinstance(item, dict)
+    )
+    critique_rows = "".join(
+        "<tr>"
+        f"<td>{_esc(str(item.get('author_role', '')))}</td>"
+        f"<td>{_esc(str(item.get('verdict', '')))}</td>"
+        f"<td>{_esc('; '.join(str(note) for note in item.get('notes', [])) if isinstance(item.get('notes', []), list) else str(item.get('raw', '')))}</td>"
+        "</tr>"
+        for item in critique_items
+        if isinstance(item, dict)
+    )
+    critique_table = (
+        f"<h4>Pre-build critique</h4><table><thead><tr><th>Role</th><th>Verdict</th><th>Notes</th></tr></thead><tbody>{critique_rows}</tbody></table>"
+        if critique_rows
+        else "<p>No pre-build critique recorded.</p>"
+    )
+    return f"""
+  <p>Selected proposal: <code>{_esc(selected_id or 'none')}</code></p>
+  <table>
+    <thead><tr><th>ID</th><th>Agent</th><th>Title</th><th>Supports</th><th>Goal</th></tr></thead>
+    <tbody>{proposal_rows or '<tr><td colspan="5">No proposals recorded.</td></tr>'}</tbody>
+  </table>
+  {critique_table}
+  <p><a href="./artifacts/cycle-{cycle.number:04d}-proposals.json">raw JSON</a> · <a href="./artifacts/cycle-{cycle.number:04d}-proposals.md">proposal board markdown</a></p>
+"""
 
 
 def _render_critic_section(cycle: CycleRecord) -> str:
@@ -574,10 +940,20 @@ def _render_studio_page() -> str:
 <section class="panel">
   <h2>Hosts</h2>
   <ul>
-    <li><strong>sparky1</strong> — developer studio. Director and Builder run here. Write mode applies diffs on feature branches and merges on green evaluation.</li>
+    <li><strong>sparky1</strong> — developer studio. Specialist proposers, QA Critic, Director, Designer, Builder, and Reviewer run here. Write mode applies patches on feature branches and merges on green evaluation.</li>
     <li><strong>sparky2</strong> — evaluation lab. Runs unit/build/smoke/visual gates and returns structured QA/design reports.</li>
     <li><strong>theebie.de</strong> — public runtime for the playable build, docs, and devlog.</li>
   </ul>
+</section>
+<section class="panel">
+  <h2>Agent studio loop</h2>
+  <ol>
+    <li><strong>Specialist agendas</strong> live in <code>agent-agendas.json</code>. Each specialist has a mission, current goal, proposal counts, and recent feedback.</li>
+    <li><strong>Proposal board</strong> artifacts (<code>cycle-####-proposals.json</code> / <code>.md</code>) collect Enemy Designer, Systems Designer, and Art Director concepts.</li>
+    <li><strong>QA Critic</strong> reviews proposals before code exists, blocking vague, invisible, untestable, or trivial concepts.</li>
+    <li><strong>Director</strong> selects an accepted proposal to advance; Designer and Builder receive the same board context.</li>
+    <li><strong>sparky2</strong> evaluates the candidate against the selected proposal, not just the raw diff.</li>
+  </ol>
 </section>
 <section class="panel">
   <h2>Handoff (do you need it?)</h2>
@@ -680,6 +1056,16 @@ code { font-family: Consolas, monospace; }
 .doc-list { line-height: 1.7; }
 .markdown h2, .markdown h3 { margin-top: 1.2rem; }
 .markdown ul { padding-left: 1.2rem; }
+.compact-hero { margin-bottom: 0.5rem; }
+.overview-list { line-height: 1.65; margin: 0.5rem 0 0; padding-left: 1.2rem; }
+.overview-sublist { margin-top: 0.35rem; }
+details.fold { background: #1b1814; border: 1px solid #342e27; border-radius: 10px; margin: 0.75rem 0; }
+details.fold > summary { cursor: pointer; list-style: none; display: flex; gap: 0.75rem; justify-content: space-between; align-items: baseline; padding: 0.85rem 1rem; font-weight: bold; }
+details.fold > summary::-webkit-details-marker { display: none; }
+.fold-title { color: #f3ead8; }
+.fold-hint { color: #b7aa93; font-weight: normal; font-size: 0.92rem; text-align: right; max-width: 55ch; }
+.fold-body { padding: 0 1rem 1rem; border-top: 1px solid #2a241d; }
+.artifact-links { color: #c8bcaa; font-size: 0.95rem; margin: 1rem 0 2rem; }
 """
 
 

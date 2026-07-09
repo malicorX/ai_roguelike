@@ -99,7 +99,7 @@ export const HUD = true;
 
 
 class WriteScopeTest(unittest.TestCase):
-    def test_validate_write_scope_rejects_mixed_src_and_tests(self) -> None:
+    def test_validate_write_scope_allows_src_and_focused_tests(self) -> None:
         designer = "\n".join(
             [
                 "# In-scope files",
@@ -111,8 +111,21 @@ class WriteScopeTest(unittest.TestCase):
             ]
         )
         issues = validate_write_scope(designer)
+        self.assertEqual(issues, [])
+
+    def test_validate_write_scope_rejects_oversized_implementation_bundle(self) -> None:
+        designer = "\n".join(
+            [
+                "# In-scope files",
+                "- `game/src/engine.ts`",
+                "- `game/src/render.ts`",
+                "- `game/src/main.ts`",
+                "- `game/smoke/playability.spec.ts`",
+            ]
+        )
+        issues = validate_write_scope(designer)
         self.assertEqual(len(issues), 1)
-        self.assertIn("mixes implementation and test", issues[0])
+        self.assertIn("more than three implementation files", issues[0])
 
     def test_allowed_builder_paths_prefers_primary_implementation_file(self) -> None:
         designer = "\n".join(

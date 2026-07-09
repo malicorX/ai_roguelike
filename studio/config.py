@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass, field
 
 DEFAULT_MODEL = "hf.co/InternScience/Agents-A1-Q4_K_M-GGUF:latest"
@@ -58,3 +59,12 @@ def evaluation_models_string(config: StudioConfig) -> str:
         for role in sorted(config.model_assignments)
         if role in EVALUATION_ROLES
     )
+
+
+def prefer_nvidia_models() -> bool:
+    raw = os.environ.get("STUDIO_PREFER_NVIDIA", "auto").strip().lower()
+    if raw in {"0", "false", "no", "local", "local-only"}:
+        return False
+    if raw in {"1", "true", "yes", "nvidia", "nvidia-first"}:
+        return True
+    return any(os.environ.get(name, "").strip() for name in ("NVIDIA_API_KEY", "NVAPI_KEY"))

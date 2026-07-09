@@ -6,7 +6,19 @@ from unittest.mock import patch
 
 from studio.evaluation_client import EvaluationTarget
 from studio.config import StudioConfig
-from studio.orchestrator import DirectorMode, build_evaluation_request, main, next_cycle_number, run_dry_cycle, run_pilot_cycle
+from studio.orchestrator import (
+    DirectorMode,
+    blocked_cycle_for_retry,
+    build_evaluation_request,
+    clear_cycle_for_retry,
+    cycle_is_green,
+    main,
+    next_cycle_number,
+    next_cycle_number_until_green,
+    run_dry_cycle,
+    run_pilot_cycle,
+)
+from studio.orchestrator import PilotCycleResult
 
 
 class OrchestratorTest(unittest.TestCase):
@@ -51,7 +63,172 @@ class OrchestratorTest(unittest.TestCase):
                 )
 
         self.assertIn("Write-mode rules", context)
-        self.assertIn("concrete, small game changes", context)
+        self.assertIn("specialist proposal", context)
+        self.assertIn("numeric-only stat tweaks", context)
+
+    def test_write_cycle_runs_specialist_proposals_before_director(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            repo = Path(tmpdir)
+            state_dir = repo / "studio" / "state"
+            roles_dir = repo / "studio" / "roles"
+            roles_dir.mkdir(parents=True)
+            game = repo / "game"
+            game.mkdir(parents=True)
+            self._write_success_npm(game)
+            for role in ["enemy_designer", "systems_designer", "art_director_concept", "qa_critic"]:
+                (roles_dir / f"{role}.md").write_text(f"# {role}\n", encoding="utf-8")
+
+            calls: list[str] = []
+            director_contexts: list[str] = []
+            specialist_contexts: list[str] = []
+            art_contexts: list[str] = []
+
+            def fake_role_runner(*args: object, **_kwargs: object) -> str:
+                role = str(args[2])
+                calls.append(role)
+                if role == "enemy_designer":
+                    specialist_contexts.append(str(args[3]))
+                    return "\n".join(
+                        [
+                            "Title: Lantern Leech",
+                            "Goal: Add a monster that reacts to light and forces positioning.",
+                            "Player experience: The player sees a distinct threat and changes movement.",
+                            "Implementation hint: likely game/src/engine.ts and game/src/render.ts.",
+                            "Acceptance: Smoke sees a distinct enemy glyph.",
+                        ]
+                    )
+                if role == "systems_designer":
+                    return "Title: Echo Step\nGoal: Add noisy movement that attracts danger."
+                if role == "art_director_concept":
+                    art_contexts.append(str(args[3]))
+                    return "Title: Leech Glow\nSupports: enemy_designer-1\nGoal: Use color/glyph contrast for the new enemy."
+                if role == "qa_critic":
+                    return "Verdict: PASS\n- Lantern Leech has visible behavior and testable acceptance."
+                if role == "director":
+                    director_contexts.append(str(args[3]))
+                    return "Objective: Implement the Lantern Leech enemy concept.\nReason: It was selected by the specialist proposal board."
+                if role == "designer":
+                    return self._default_designer_output()
+                if role == "builder":
+                    return "Builder output without patch blocks."
+                raise AssertionError(f"Unexpected role: {role}")
+
+            with patch("studio.orchestrator._git_output") as git_output:
+                git_output.side_effect = ["main", "abc1234", "main", "abc1234"]
+                result = run_pilot_cycle(
+                    repo,
+                    state_dir,
+                    cycle_number=7,
+                    evaluation_target=EvaluationTarget.LOCAL,
+                    director_mode=DirectorMode.MODEL,
+                    studio_config=StudioConfig.from_model_string("director=test-model,builder=test-model,designer=test-model"),
+                    roles_dir=roles_dir,
+                    role_runner=fake_role_runner,
+                    apply_writes=True,
+                )
+
+            self.assertTrue(result.blocked)
+            self.assertLess(calls.index("enemy_designer"), calls.index("director"))
+            self.assertLess(calls.index("enemy_designer"), calls.index("art_director_concept"))
+            self.assertTrue((state_dir / "cycle-0007-proposals.json").is_file())
+            self.assertTrue((state_dir / "agent-agendas.json").is_file())
+            self.assertIn("Specialist agent agendas", specialist_contexts[0])
+            self.assertIn("Primary concepts already proposed", art_contexts[0])
+            self.assertIn("Lantern Leech", art_contexts[0])
+            self.assertIn("Lantern Leech", director_contexts[0])
+
+    def test_write_cycle_blocks_when_qa_critic_blocks_proposal_board(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            repo = Path(tmpdir)
+            state_dir = repo / "studio" / "state"
+            roles_dir = repo / "studio" / "roles"
+            roles_dir.mkdir(parents=True)
+            game = repo / "game"
+            game.mkdir(parents=True)
+            self._write_success_npm(game)
+            for role in ["enemy_designer", "qa_critic"]:
+                (roles_dir / f"{role}.md").write_text(f"# {role}\n", encoding="utf-8")
+
+            calls: list[str] = []
+
+            def fake_role_runner(*args: object, **_kwargs: object) -> str:
+                role = str(args[2])
+                calls.append(role)
+                if role == "enemy_designer":
+                    return "Title: Fog Bat\nGoal: Create a threat."
+                if role == "qa_critic":
+                    return "Verdict: BLOCK\n- Too vague to test or render."
+                if role == "director":
+                    raise AssertionError("Director should not run after blocked proposal board")
+                raise AssertionError(f"Unexpected role: {role}")
+
+            with patch("studio.orchestrator._git_output") as git_output:
+                git_output.side_effect = ["main", "abc1234"]
+                result = run_pilot_cycle(
+                    repo,
+                    state_dir,
+                    cycle_number=8,
+                    evaluation_target=EvaluationTarget.LOCAL,
+                    director_mode=DirectorMode.MODEL,
+                    studio_config=StudioConfig.from_model_string("director=test-model"),
+                    roles_dir=roles_dir,
+                    role_runner=fake_role_runner,
+                    apply_writes=True,
+                )
+
+            report = json.loads((state_dir / "cycle-0008-report.json").read_text(encoding="utf-8"))
+            self.assertTrue(result.blocked)
+            self.assertNotIn("director", calls)
+            self.assertEqual(report["qa"]["checks"], ["proposal board gate"])
+
+    def test_write_cycle_keeps_proposal_board_when_one_specialist_fails(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            repo = Path(tmpdir)
+            state_dir = repo / "studio" / "state"
+            roles_dir = repo / "studio" / "roles"
+            roles_dir.mkdir(parents=True)
+            game = repo / "game"
+            game.mkdir(parents=True)
+            self._write_success_npm(game)
+            for role in ["enemy_designer", "systems_designer"]:
+                (roles_dir / f"{role}.md").write_text(f"# {role}\n", encoding="utf-8")
+
+            director_contexts: list[str] = []
+
+            def fake_role_runner(*args: object, **_kwargs: object) -> str:
+                role = str(args[2])
+                if role == "enemy_designer":
+                    return "Title: Lantern Leech\nGoal: Create a visible threat."
+                if role == "systems_designer":
+                    raise TimeoutError("systems model timed out")
+                if role == "director":
+                    director_contexts.append(str(args[3]))
+                    return "Objective: Implement Lantern Leech.\nReason: selected proposal."
+                if role == "designer":
+                    return self._default_designer_output()
+                if role == "builder":
+                    return "Builder output without patch blocks."
+                raise AssertionError(f"Unexpected role: {role}")
+
+            with patch("studio.orchestrator._git_output") as git_output:
+                git_output.side_effect = ["main", "abc1234", "main", "abc1234"]
+                result = run_pilot_cycle(
+                    repo,
+                    state_dir,
+                    cycle_number=9,
+                    evaluation_target=EvaluationTarget.LOCAL,
+                    director_mode=DirectorMode.MODEL,
+                    studio_config=StudioConfig.from_model_string("director=test-model"),
+                    roles_dir=roles_dir,
+                    role_runner=fake_role_runner,
+                    apply_writes=True,
+                )
+
+            board = json.loads((state_dir / "cycle-0009-proposals.json").read_text(encoding="utf-8"))
+            self.assertTrue(result.blocked)
+            self.assertEqual(board["selected_id"], "enemy_designer-1")
+            self.assertIn("systems model timed out", json.dumps(board))
+            self.assertIn("Lantern Leech", director_contexts[0])
 
     def test_director_context_includes_write_mode_and_recent_cycles(self) -> None:
         from studio.orchestrator import _director_context
@@ -762,6 +939,125 @@ class OrchestratorTest(unittest.TestCase):
 
             self.assertEqual(next_cycle_number(state_dir), 4)
 
+    def test_next_cycle_number_advances_after_proposal_only_cycle(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            state_dir = Path(tmpdir)
+            (state_dir / "cycle-0083-director.md").write_text("Objective: test\n", encoding="utf-8")
+            (state_dir / "cycle-0083-report.json").write_text("{}\n", encoding="utf-8")
+            (state_dir / "cycle-0084-proposals.json").write_text(
+                json.dumps({"cycle_number": 84, "selected_id": "enemy_designer-1"}),
+                encoding="utf-8",
+            )
+
+            self.assertEqual(next_cycle_number(state_dir), 85)
+
+    def test_next_cycle_number_advances_after_proposal_only_cycle(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            state_dir = Path(tmpdir)
+            (state_dir / "cycle-0083-director.md").write_text("Objective: test\n", encoding="utf-8")
+            (state_dir / "cycle-0083-report.json").write_text("{}\n", encoding="utf-8")
+            (state_dir / "cycle-0084-proposals.json").write_text(
+                json.dumps({"cycle_number": 84, "selected_id": "enemy_designer-1"}),
+                encoding="utf-8",
+            )
+
+            self.assertEqual(next_cycle_number(state_dir), 85)
+
+    def test_blocked_cycle_for_retry_returns_latest_blocked_report_cycle(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            state_dir = Path(tmpdir)
+            (state_dir / "cycle-0088-report.json").write_text(
+                json.dumps(
+                    {
+                        "request_branch": "main",
+                        "request_commit": "abc1234",
+                        "qa": {"verdict": "REWORK", "bugs": ["patch failed"]},
+                        "design": {"verdict": "BACKLOG"},
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            self.assertEqual(blocked_cycle_for_retry(state_dir), 88)
+            self.assertEqual(next_cycle_number_until_green(state_dir, until_green=True), 88)
+
+    def test_clear_cycle_for_retry_removes_gate_artifacts(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            state_dir = Path(tmpdir)
+            prefix = state_dir / "cycle-0088"
+            (Path(f"{prefix}-report.json")).write_text("{}\n", encoding="utf-8")
+            (Path(f"{prefix}-builder.md")).write_text("builder\n", encoding="utf-8")
+
+            cleared = clear_cycle_for_retry(state_dir, 88)
+
+            self.assertIn("report.json", cleared)
+            self.assertFalse((state_dir / "cycle-0088-report.json").is_file())
+
+    def test_cycle_is_green_requires_merge_for_apply_writes(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            state_dir = Path(tmpdir)
+            merge_path = state_dir / "cycle-0005-merge.json"
+            merge_path.write_text(json.dumps({"verdict": "MERGED"}) + "\n", encoding="utf-8")
+            result = PilotCycleResult(
+                director_path=state_dir / "cycle-0005-director.md",
+                builder_path=state_dir / "cycle-0005-builder.md",
+                proposal_lint_path=state_dir / "cycle-0005-proposal-lint.json",
+                request_path=state_dir / "cycle-0005-request.json",
+                report_path=state_dir / "cycle-0005-report.json",
+                blocked=False,
+                blocking_reasons=[],
+                merge_path=merge_path,
+            )
+
+            self.assertTrue(cycle_is_green(result, apply_writes=True))
+
+    def test_main_until_green_retries_blocked_cycle(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            repo = Path(tmpdir)
+            state_dir = repo / "studio" / "state"
+            state_dir.mkdir(parents=True)
+            blocked = PilotCycleResult(
+                director_path=state_dir / "cycle-0001-director.md",
+                builder_path=state_dir / "cycle-0001-builder.md",
+                proposal_lint_path=state_dir / "cycle-0001-proposal-lint.json",
+                request_path=state_dir / "cycle-0001-request.json",
+                report_path=state_dir / "cycle-0001-report.json",
+                blocked=True,
+                blocking_reasons=["patch failed"],
+            )
+            green_merge = state_dir / "cycle-0001-merge.json"
+            green = PilotCycleResult(
+                director_path=state_dir / "cycle-0001-director.md",
+                builder_path=state_dir / "cycle-0001-builder.md",
+                proposal_lint_path=state_dir / "cycle-0001-proposal-lint.json",
+                request_path=state_dir / "cycle-0001-request.json",
+                report_path=state_dir / "cycle-0001-report.json",
+                blocked=False,
+                blocking_reasons=[],
+                merge_path=green_merge,
+            )
+            green_merge.write_text(json.dumps({"verdict": "MERGED"}) + "\n", encoding="utf-8")
+
+            with patch("studio.orchestrator.run_pilot_cycle", side_effect=[blocked, green]), patch(
+                "studio.orchestrator._finalize_cycle"
+            ), patch("studio.orchestrator._publish_devlog"), patch(
+                "studio.orchestrator._emit_cycle_process_report"
+            ):
+                exit_code = main(
+                    [
+                        "--repo-root",
+                        str(repo),
+                        "--state-dir",
+                        str(state_dir),
+                        "--apply-writes",
+                        "--until-green",
+                        "--evaluation-target",
+                        "local",
+                    ]
+                )
+
+        self.assertEqual(exit_code, 0)
+
     def test_objective_from_director_output_strips_markdown_bold(self) -> None:
         from studio.orchestrator import _objective_from_director_output
 
@@ -1152,6 +1448,152 @@ class OrchestratorTest(unittest.TestCase):
         self.assertEqual(apply_data["verdict"], "APPLIED")
         self.assertEqual(merge_data["verdict"], "MERGED")
         self.assertIn("play-updated", render_source)
+
+    def test_write_cycle_merges_supported_specialist_concept_on_green_evaluation(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            repo = Path(tmpdir)
+            state_dir = repo / "studio" / "state"
+            roles_dir = repo / "studio" / "roles"
+            game = repo / "game"
+            src = game / "src"
+            src.mkdir(parents=True)
+            (game / "package.json").write_text(json.dumps({"scripts": {"test": "vitest run"}}), encoding="utf-8")
+            (src / "engine.ts").write_text(
+                "\n".join(
+                    [
+                        "export type Enemy = { id: string; glyph: string };",
+                        "export function createEnemies(): Enemy[] {",
+                        '  return [{ id: "enemy-1", glyph: "e" }];',
+                        "}",
+                    ]
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            roles_dir.mkdir(parents=True)
+            for role in ["enemy_designer", "systems_designer", "art_director_concept", "qa_critic"]:
+                (roles_dir / f"{role}.md").write_text(f"# {role}\n", encoding="utf-8")
+            self._init_git_repo(repo)
+            self._write_success_npm(game)
+
+            def fake_role_runner(*args: object, **_kwargs: object) -> str:
+                role = str(args[2])
+                if role == "enemy_designer":
+                    return "\n".join(
+                        [
+                            "Title: Lantern Leech",
+                            "Goal: Add a distinct enemy identity for future light-hunting behavior.",
+                            "Player experience: The player sees a new threatening glyph.",
+                            "Implementation hint: Update game/src/engine.ts enemy spawn data.",
+                            "Acceptance: createEnemies includes enemy-2 with glyph L.",
+                        ]
+                    )
+                if role == "systems_designer":
+                    return "Title: Echo Step\nGoal: Add movement noise pressure later."
+                if role == "art_director_concept":
+                    return "Title: Leech Glyph\nSupports: enemy_designer-1\nGoal: Use glyph L for the leech."
+                if role == "qa_critic":
+                    return "Verdict: PASS\n- Concept has visible identity and deterministic acceptance."
+                if role == "director":
+                    return "Proposal: enemy_designer-1\nObjective: Implement the Lantern Leech enemy data.\nReason: It has art support and QA acceptance."
+                if role == "designer":
+                    return "\n".join(
+                        [
+                            "## Summary",
+                            "Add Lantern Leech enemy data.",
+                            "",
+                            "## Acceptance criteria",
+                            "1. createEnemies returns enemy-2 with glyph L.",
+                            "",
+                            "## In-scope files",
+                            "- `game/src/engine.ts`",
+                            "",
+                            "## Test plan",
+                            "- npm test",
+                        ]
+                    )
+                if role == "builder":
+                    return "\n".join(
+                        [
+                            "Implementation summary: add Lantern Leech enemy data.",
+                            "Proposed changed files:",
+                            "- `game/src/engine.ts`",
+                            "```search_replace game/src/engine.ts",
+                            "<<<<<<< SEARCH",
+                            '  return [{ id: "enemy-1", glyph: "e" }];',
+                            "=======",
+                            '  return [{ id: "enemy-1", glyph: "e" }, { id: "enemy-2", glyph: "L" }];',
+                            ">>>>>>> REPLACE",
+                            "```",
+                        ]
+                    )
+                if role == "reviewer":
+                    return "PASS"
+                raise AssertionError(f"Unexpected role: {role}")
+
+            with patch("studio.orchestrator._git_output") as git_output, patch("studio.orchestrator.push_main"), patch(
+                "studio.orchestrator.EvaluationClient"
+            ) as evaluation_client:
+                git_output.side_effect = ["main", "abc1234", "main", "abc1234"]
+                evaluation_client.return_value.evaluate.return_value.blocks_merge.return_value = False
+                evaluation_client.return_value.evaluate.return_value.blocking_reasons.return_value = []
+                result = run_pilot_cycle(
+                    repo,
+                    state_dir,
+                    cycle_number=12,
+                    evaluation_target=EvaluationTarget.LOCAL,
+                    director_mode=DirectorMode.MODEL,
+                    studio_config=StudioConfig.from_model_string("director=test-model,builder=test-model,designer=test-model,reviewer=test-model"),
+                    roles_dir=roles_dir,
+                    role_runner=fake_role_runner,
+                    apply_writes=True,
+                )
+
+            board = json.loads((state_dir / "cycle-0012-proposals.json").read_text(encoding="utf-8"))
+            engine_source = (src / "engine.ts").read_text(encoding="utf-8")
+
+        self.assertFalse(result.blocked)
+        self.assertEqual(board["selected_id"], "enemy_designer-1")
+        self.assertIn("art_director_concept-1", json.dumps(board))
+        self.assertIn('glyph: "L"', engine_source)
+
+    def test_main_proposal_only_writes_board_without_director(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            repo = Path(tmpdir)
+            state_dir = repo / "studio" / "state"
+            roles_dir = repo / "studio" / "roles"
+            roles_dir.mkdir(parents=True)
+            for role in ["enemy_designer", "qa_critic"]:
+                (roles_dir / f"{role}.md").write_text(f"# {role}\n", encoding="utf-8")
+
+            def fake_role_runner(*args: object, **_kwargs: object) -> str:
+                role = str(args[2])
+                if role == "enemy_designer":
+                    return "Title: Lantern Leech\nGoal: Create a visible threat."
+                if role == "qa_critic":
+                    return "Verdict: PASS\n- Visible and testable."
+                raise AssertionError(f"Unexpected role: {role}")
+
+            with patch("studio.orchestrator.run_role", side_effect=fake_role_runner), patch(
+                "studio.orchestrator._publish_devlog"
+            ):
+                exit_code = main(
+                    [
+                        "--repo-root",
+                        str(repo),
+                        "--state-dir",
+                        str(state_dir),
+                        "--director-mode",
+                        "model",
+                        "--proposal-only",
+                        "--max-cycles",
+                        "1",
+                    ]
+                )
+
+            self.assertEqual(exit_code, 0)
+            self.assertTrue((state_dir / "cycle-0001-proposals.json").is_file())
+            self.assertFalse((state_dir / "cycle-0001-director.md").is_file())
 
     def test_run_local_game_build_gate_skips_without_node_modules(self) -> None:
         from studio.orchestrator import _run_local_game_build_gate

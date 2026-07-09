@@ -27,17 +27,10 @@ def primary_implementation_path(designer_output: str) -> str | None:
 
 def validate_write_scope(designer_output: str) -> list[str]:
     impl = implementation_paths_from_designer(designer_output)
-    tests = test_paths_from_designer(designer_output)
     issues: list[str] = []
-    if len(impl) > 1:
+    if len(impl) > 3:
         issues.append(
-            "Designer spec lists more than one implementation file; write mode allows one "
-            "game/src/ or game/smoke/ file per cycle."
-        )
-    if impl and tests:
-        issues.append(
-            "Designer spec mixes implementation and test files in one cycle; put test updates "
-            "out of scope and let sparky2 catch regressions first."
+            "Designer spec lists more than three implementation files; proposal bundles must stay small enough for one reviewable branch."
         )
     return issues
 

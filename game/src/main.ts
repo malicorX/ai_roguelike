@@ -1,5 +1,5 @@
 import { createGame, stepGame, type GameAction, type GameState } from "./engine";
-import { toGlyphGrid } from "./render";
+import { toGlyphGrid, drawProximityTethers } from "./render";
 import { snapshotGame, type HarnessSnapshot } from "./testHarness";
 
 declare global {
@@ -86,6 +86,9 @@ function render(current: GameState): void {
       drawTile(glyph, x, y);
     });
   });
+
+  // Draw proximity tethers on top of tiles
+  drawProximityTethers(context, current);
 
   status.textContent = `HP ${current.player.hp} | Turn ${current.turn} | ${current.log.at(-1) ?? ""}`;
 }

@@ -19,7 +19,6 @@ from studio.churn_guards import (
     has_player_visible_change,
     is_test_only_designer_spec,
     is_test_only_objective,
-    mandatory_gameplay_objective,
     requires_src_change,
 )
 from studio.config import StudioConfig, evaluation_models_string
@@ -33,6 +32,7 @@ from studio.cycle_memory import (
 )
 from studio.duration import parse_duration
 from studio.evaluation_client import EvaluationClient, EvaluationTarget
+from studio.agent_agendas import record_cycle_outcome, record_proposal_board, record_proposal_selection, render_agenda_context
 from studio.git_ops import (
     GitOperationError,
     changed_files_against_main,
@@ -54,11 +54,26 @@ from studio.search_replace_applier import (
     extract_builder_patch,
     validate_builder_patch,
 )
+from studio.proposals import (
+    CRITIQUE_ROLE,
+    PRIMARY_PROPOSAL_ROLES,
+    ProposalBoard,
+    SUPPORT_PROPOSAL_ROLES,
+    choose_selected_proposal,
+    load_proposal_board,
+    parse_agent_proposal,
+    parse_proposal_critique,
+    proposal_id_from_text,
+    render_proposal_context,
+    save_proposal_board,
+    validate_proposal_board,
+    with_selected_proposal,
+)
 from studio.write_scope import (
     allowed_builder_paths,
-    primary_implementation_path,
     validate_write_scope,
 )
+from studio.cycle_report import print_cycle_process_report, save_cycle_process_report
 from studio.publish_devlog import publish_site
 from studio.role_runner import run_role
 
@@ -150,6 +165,48 @@ def run_pilot_cycle(
         return _load_pilot_cycle_result(state_dir, cycle_number)
 
     _cycle_log(state_dir, cycle_number, "cycle started")
+    proposal_board: ProposalBoard | None = None
+    if apply_writes and director_mode == DirectorMode.MODEL:
+        try:
+            proposal_board = _prepare_proposal_board(
+                repo_root,
+                state_dir,
+                cycle_number,
+                studio_config=studio_config,
+                roles_dir=roles_dir,
+                role_runner=role_runner,
+                role_timeout_seconds=role_timeout_seconds,
+            )
+        except (TimeoutError, OSError, RuntimeError, ValueError) as exc:
+            proposal_board = None
+            _cycle_log(state_dir, cycle_number, f"proposal phase skipped ({exc})")
+
+    proposal_board_issues = validate_proposal_board(proposal_board)
+    if proposal_board_issues:
+        _cycle_log(state_dir, cycle_number, f"blocked at proposal board gate ({len(proposal_board_issues)} issues)")
+        director_path.write_text(
+            "Objective: Proposal board blocked before Director selection.\n"
+            f"Reason: {'; '.join(proposal_board_issues)}\n",
+            encoding="utf-8",
+        )
+        return _blocked_gate_result(
+            repo_root,
+            state_dir,
+            cycle_number=cycle_number,
+            objective="Proposal board blocked before Director selection.",
+            spec="\n".join(["Specialist proposal board:", render_proposal_context(proposal_board)]),
+            director_path=director_path,
+            designer_path=designer_path,
+            builder_path=builder_path,
+            reviewer_path=reviewer_path,
+            proposal_lint_path=proposal_lint_path,
+            request_path=request_path,
+            report_path=report_path,
+            checks=["proposal board gate"],
+            bugs=proposal_board_issues,
+            repro_steps=["Regenerate specialist proposals with a non-trivial selected concept and PASS critique."],
+            blocking_reasons=["Proposal board rejected before Director selection.", *proposal_board_issues],
+        )
 
     try:
         existing_director = _read_existing_artifact(director_path)
@@ -170,6 +227,7 @@ def run_pilot_cycle(
                 role_runner=role_runner,
                 role_timeout_seconds=role_timeout_seconds,
                 apply_writes=apply_writes,
+                proposal_board=proposal_board,
             )
     except (TimeoutError, OSError, RuntimeError, ValueError) as exc:
         return _blocked_role_failure_result(
@@ -189,6 +247,12 @@ def run_pilot_cycle(
             report_path=report_path,
             apply_writes=apply_writes,
         )
+
+    director_selected_id = proposal_id_from_text(director_output, proposal_board)
+    if proposal_board is not None and director_selected_id:
+        proposal_board = with_selected_proposal(proposal_board, director_selected_id)
+        save_proposal_board(state_dir, proposal_board)
+    record_proposal_selection(state_dir, proposal_board)
 
     selected_objective = _objective_from_director_output(director_output)
     if apply_writes and requires_src_change(state_dir, before_cycle=cycle_number) and is_test_only_objective(selected_objective):
@@ -253,6 +317,7 @@ def run_pilot_cycle(
                 role_runner=role_runner,
                 role_timeout_seconds=role_timeout_seconds,
                 apply_writes=apply_writes,
+                proposal_board=proposal_board,
             )
     except (TimeoutError, OSError, RuntimeError, ValueError) as exc:
         return _blocked_role_failure_result(
@@ -360,6 +425,7 @@ def run_pilot_cycle(
                 role_runner=role_runner,
                 role_timeout_seconds=role_timeout_seconds,
                 apply_writes=apply_writes,
+                proposal_board=proposal_board,
             )
     except (TimeoutError, OSError, RuntimeError, ValueError) as exc:
         return _blocked_role_failure_result(
@@ -409,6 +475,9 @@ def run_pilot_cycle(
             if not apply_writes
             else "Phase 1 write cycle: repository changes may be applied on a feature branch after proposal lint passes.",
             spec,
+            "",
+            "Specialist proposal board:",
+            render_proposal_context(proposal_board),
             "",
             "Designer spec:",
             designer_output.strip(),
@@ -486,6 +555,7 @@ def run_pilot_cycle(
                         role_timeout_seconds=role_timeout_seconds,
                         apply_writes=apply_writes,
                         patch_validation_issues=patch_validation_issues,
+                        proposal_board=proposal_board,
                     )
                 except (TimeoutError, OSError, RuntimeError, ValueError) as exc:
                     return _blocked_role_failure_result(
@@ -547,6 +617,7 @@ def run_pilot_cycle(
             role_runner=role_runner,
             role_timeout_seconds=role_timeout_seconds,
             apply_writes=apply_writes,
+            proposal_board=proposal_board,
         )
     except (TimeoutError, OSError, RuntimeError, ValueError) as exc:
         return _blocked_role_failure_result(
@@ -606,6 +677,7 @@ def run_pilot_cycle(
             reviewer_path=reviewer_path,
             proposal_lint_path=proposal_lint_path,
             models=evaluation_models_string(studio_config),
+            proposal_board=proposal_board,
         )
 
     request = build_evaluation_request(
@@ -677,16 +749,132 @@ def run_dry_cycle(
 def next_cycle_number(state_dir: Path) -> int:
     numbers: set[int] = set()
     if state_dir.is_dir():
-        for path in state_dir.glob("cycle-*-director.md"):
-            match = re.match(r"cycle-(\d+)-director\.md$", path.name)
-            if match:
-                numbers.add(int(match.group(1)))
+        for pattern in ("cycle-*-director.md", "cycle-*-proposals.json"):
+            for path in state_dir.glob(pattern):
+                match = re.match(r"cycle-(\d+)-(?:director\.md|proposals\.json)$", path.name)
+                if match:
+                    numbers.add(int(match.group(1)))
     if not numbers:
         return 1
     latest = max(numbers)
-    if not (state_dir / f"cycle-{latest:04d}-report.json").is_file():
+    if (state_dir / f"cycle-{latest:04d}-director.md").is_file() and not (
+        state_dir / f"cycle-{latest:04d}-report.json"
+    ).is_file():
         return latest
     return latest + 1
+
+
+def _report_cycle_numbers(state_dir: Path) -> set[int]:
+    numbers: set[int] = set()
+    if not state_dir.is_dir():
+        return numbers
+    for path in state_dir.glob("cycle-*-report.json"):
+        match = re.match(r"cycle-(\d+)-report\.json$", path.name)
+        if match:
+            numbers.add(int(match.group(1)))
+    return numbers
+
+
+def _merge_verdict(state_dir: Path, cycle_number: int) -> str | None:
+    merge_path = state_dir / f"cycle-{cycle_number:04d}-merge.json"
+    if not merge_path.is_file():
+        return None
+    try:
+        verdict = str(json.loads(merge_path.read_text(encoding="utf-8")).get("verdict", "")).strip().upper()
+    except json.JSONDecodeError:
+        return None
+    return verdict or None
+
+
+def cycle_is_green(result: PilotCycleResult, *, apply_writes: bool) -> bool:
+    if apply_writes:
+        if result.blocked:
+            return False
+        if result.merge_path is None or not result.merge_path.is_file():
+            return False
+        try:
+            verdict = str(json.loads(result.merge_path.read_text(encoding="utf-8")).get("verdict", "")).upper()
+        except json.JSONDecodeError:
+            return False
+        return verdict == "MERGED"
+    return not result.blocked
+
+
+def _all_cycle_numbers(state_dir: Path) -> set[int]:
+    numbers: set[int] = set()
+    if not state_dir.is_dir():
+        return numbers
+    for path in state_dir.glob("cycle-*"):
+        match = re.match(r"cycle-(\d+)-", path.name)
+        if match:
+            numbers.add(int(match.group(1)))
+    return numbers
+
+
+def blocked_cycle_for_retry(state_dir: Path) -> int | None:
+    numbers = _all_cycle_numbers(state_dir)
+    if not numbers:
+        return None
+    latest = max(numbers)
+    if _merge_verdict(state_dir, latest) == "MERGED":
+        return None
+    report_path = state_dir / f"cycle-{latest:04d}-report.json"
+    proposals_path = state_dir / f"cycle-{latest:04d}-proposals.json"
+    if report_path.is_file():
+        try:
+            report = EvaluationReport.from_dict(json.loads(report_path.read_text(encoding="utf-8")))
+        except json.JSONDecodeError:
+            return latest
+        if report.blocks_merge() or _merge_verdict(state_dir, latest) != "MERGED":
+            return latest
+        return None
+    if proposals_path.is_file():
+        board = load_proposal_board(state_dir, latest)
+        if board is not None and validate_proposal_board(board):
+            return latest
+    return None
+
+
+def next_cycle_number_until_green(state_dir: Path, *, until_green: bool) -> int:
+    if until_green:
+        retry = blocked_cycle_for_retry(state_dir)
+        if retry is not None:
+            return retry
+    return next_cycle_number(state_dir)
+
+
+_RETRY_ARTIFACT_SUFFIXES = (
+    "report.json",
+    "request.json",
+    "apply.json",
+    "merge.json",
+    "reviewer.json",
+    "proposal-lint.json",
+    "builder.md",
+    "designer.md",
+    "director.md",
+    "proposals.json",
+    "proposals.md",
+    "process.md",
+    "critic.json",
+)
+
+
+def clear_cycle_for_retry(state_dir: Path, cycle_number: int) -> list[str]:
+    prefix = f"cycle-{cycle_number:04d}"
+    cleared: list[str] = []
+    for suffix in _RETRY_ARTIFACT_SUFFIXES:
+        path = state_dir / f"{prefix}-{suffix}"
+        if path.is_file():
+            path.unlink()
+            cleared.append(suffix)
+    run_log = state_dir / f"{prefix}-run.log"
+    if run_log.is_file():
+        run_log.unlink()
+        cleared.append("run.log")
+    if cleared:
+        _cycle_log(state_dir, cycle_number, f"until-green retry: cleared {', '.join(cleared)}")
+    return cleared
 
 
 def _load_pilot_cycle_result(state_dir: Path, cycle_number: int) -> PilotCycleResult:
@@ -740,11 +928,17 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--director-mode", choices=[mode.value for mode in DirectorMode], default=DirectorMode.STATIC.value)
     parser.add_argument("--role-timeout-seconds", type=int, default=600)
     parser.add_argument("--dry-run", action="store_true", help="Run one safe local evaluation cycle.")
+    parser.add_argument("--proposal-only", action="store_true", help="Run only the specialist proposal board for the next cycle.")
     parser.add_argument("--apply-writes", action="store_true", help="Apply Builder diffs on feature branches and merge on green evaluation.")
+    parser.add_argument("--until-green", action="store_true", help="Retry blocked write cycles until merge succeeds.")
+    parser.add_argument("--single-cycle", action="store_true", help="Stop after one attempt even if blocked.")
     args = parser.parse_args(argv)
+
+    until_green = args.until_green and not args.single_cycle
 
     studio_config = StudioConfig.from_model_string(args.models)
     state_dir = args.state_dir or args.repo_root / "studio" / "state"
+    state_dir.mkdir(parents=True, exist_ok=True)
     evaluation_target = EvaluationTarget(args.evaluation_target)
     director_mode = DirectorMode(args.director_mode)
 
@@ -752,19 +946,55 @@ def main(argv: Sequence[str] | None = None) -> int:
     start_cycle = next_cycle_number(state_dir)
     deadline = time.monotonic() + parse_duration(args.time)
     print(
-        f"orchestrator starting: cycles={cycles} from={start_cycle} time_budget={args.time} apply_writes={args.apply_writes}",
+        f"orchestrator starting: cycles={cycles} from={start_cycle} time_budget={args.time} "
+        f"apply_writes={args.apply_writes} until_green={until_green}",
         flush=True,
     )
     last_blocked = False
     completed = 0
-    while completed < cycles:
+    while until_green or completed < cycles:
         if time.monotonic() >= deadline:
             print(f"time budget {args.time} elapsed; exiting before next cycle.", flush=True)
             break
-        cycle_number = next_cycle_number(state_dir)
+        cycle_number = next_cycle_number_until_green(state_dir, until_green=until_green)
+        if until_green and blocked_cycle_for_retry(state_dir) == cycle_number:
+            clear_cycle_for_retry(state_dir, cycle_number)
         if (state_dir / "STOP").exists():
             print(f"STOP file found at {state_dir / 'STOP'}; exiting before cycle {cycle_number}.", flush=True)
             break
+        if args.proposal_only:
+            board = _prepare_proposal_board(
+                args.repo_root,
+                state_dir,
+                cycle_number,
+                studio_config=studio_config,
+                roles_dir=args.repo_root / "studio" / "roles",
+                role_runner=run_role,
+                role_timeout_seconds=args.role_timeout_seconds,
+            )
+            if board is None:
+                print(f"cycle {cycle_number}: no proposal roles available", flush=True)
+                last_blocked = True
+            else:
+                issues = validate_proposal_board(board)
+                print(
+                    f"cycle {cycle_number}: proposal_board={state_dir / f'cycle-{cycle_number:04d}-proposals.json'} "
+                    f"selected={board.selected_id} issues={len(issues)}",
+                    flush=True,
+                )
+                if issues:
+                    for issue in issues:
+                        print(f"proposal issue: {issue}", flush=True)
+                last_blocked = bool(issues)
+                _publish_devlog(args.repo_root, state_dir)
+                _emit_cycle_process_report(state_dir, cycle_number)
+            if until_green and not last_blocked:
+                return 0
+            if until_green and last_blocked:
+                print(f"cycle {cycle_number}: blocked; until-green will retry", flush=True)
+                continue
+            completed += 1
+            continue
         if args.dry_run:
             dry_result = run_dry_cycle(
                 args.repo_root,
@@ -778,6 +1008,12 @@ def main(argv: Sequence[str] | None = None) -> int:
             last_blocked = dry_result.blocked
             print(f"cycle {cycle_number}: report={dry_result.report_path} blocked={dry_result.blocked}", flush=True)
             _publish_devlog(args.repo_root, state_dir)
+            _emit_cycle_process_report(state_dir, cycle_number)
+            if until_green and not dry_result.blocked:
+                return 0
+            if until_green and dry_result.blocked:
+                print(f"cycle {cycle_number}: blocked; until-green will retry", flush=True)
+                continue
             completed += 1
             continue
 
@@ -799,8 +1035,16 @@ def main(argv: Sequence[str] | None = None) -> int:
             f"branch={pilot_result.branch} blocked={pilot_result.blocked}",
             flush=True,
         )
-        _publish_devlog(args.repo_root, state_dir)
         _finalize_cycle(args.repo_root, state_dir, cycle_number, pilot_result, apply_writes=args.apply_writes)
+        _publish_devlog(args.repo_root, state_dir)
+        _emit_cycle_process_report(state_dir, cycle_number)
+        if cycle_is_green(pilot_result, apply_writes=args.apply_writes):
+            print(f"cycle {cycle_number}: green — merged and ready", flush=True)
+            return 0
+        last_blocked = True
+        if until_green:
+            _cycle_log(state_dir, cycle_number, "blocked; until-green will retry")
+            continue
         completed += 1
 
     return 1 if last_blocked else 0
@@ -841,6 +1085,14 @@ def _finalize_cycle(
         merge_verdict=merge_verdict,
         branch=branch,
     )
+    proposal_board = load_proposal_board(state_dir, cycle_number)
+    record_cycle_outcome(
+        state_dir,
+        proposal_board,
+        merged=merge_verdict == "MERGED",
+        blocked=result.blocked or merge_verdict != "MERGED",
+        feedback=result.blocking_reasons,
+    )
     if result.blocked or merge_verdict != "MERGED":
         return
     if not result.report_path.is_file():
@@ -852,6 +1104,11 @@ def _finalize_cycle(
     suggestions = report_data.get("design", {}).get("backlog_suggestions", [])
     if isinstance(suggestions, list):
         append_backlog_suggestions(repo_root, [str(item) for item in suggestions], source_cycle=cycle_number)
+
+
+def _emit_cycle_process_report(state_dir: Path, cycle_number: int) -> None:
+    save_cycle_process_report(state_dir, cycle_number)
+    print_cycle_process_report(state_dir, cycle_number)
 
 
 def _publish_devlog(repo_root: Path, state_dir: Path) -> None:
@@ -898,6 +1155,7 @@ def _run_write_cycle(
     reviewer_path: Path,
     proposal_lint_path: Path,
     models: str = "",
+    proposal_board: ProposalBoard | None = None,
 ) -> PilotCycleResult:
     request_path = state_dir / f"cycle-{cycle_number:04d}-request.json"
     report_path = state_dir / f"cycle-{cycle_number:04d}-report.json"
@@ -1003,6 +1261,9 @@ def _run_write_cycle(
         [
             "Phase 1 write cycle: repository changes were applied on a feature branch before evaluation.",
             spec,
+            "",
+            "Specialist proposal board:",
+            render_proposal_context(proposal_board),
             "",
             "Designer spec:",
             designer_output.strip(),
@@ -1262,6 +1523,112 @@ def _git_output(repo_root: Path, *args: str) -> str:
     ).strip()
 
 
+def _prepare_proposal_board(
+    repo_root: Path,
+    state_dir: Path,
+    cycle_number: int,
+    *,
+    studio_config: StudioConfig,
+    roles_dir: Path,
+    role_runner: RoleRunner,
+    role_timeout_seconds: int,
+) -> ProposalBoard | None:
+    existing = load_proposal_board(state_dir, cycle_number)
+    if existing is not None:
+        _cycle_log(state_dir, cycle_number, "reusing proposal board")
+        return existing
+
+    primary_roles = [role for role in PRIMARY_PROPOSAL_ROLES if (roles_dir / f"{role}.md").is_file()]
+    support_roles = [role for role in SUPPORT_PROPOSAL_ROLES if (roles_dir / f"{role}.md").is_file()]
+    if not primary_roles and not support_roles:
+        return None
+
+    _cycle_log(state_dir, cycle_number, "running proposal specialists")
+    context = _proposal_context(repo_root, state_dir, cycle_number)
+    proposals = []
+    critiques = []
+    for index, role in enumerate(primary_roles, start=1):
+        try:
+            output = role_runner(
+                studio_config,
+                roles_dir,
+                role,
+                context,
+                timeout_seconds=role_timeout_seconds,
+            )
+        except (TimeoutError, OSError, RuntimeError, ValueError) as exc:
+            critiques.append(parse_proposal_critique(role, f"Verdict: BACKLOG\n- Proposal role failed: {exc}"))
+            continue
+        proposals.append(parse_agent_proposal(role, output, index=index))
+
+    if support_roles:
+        support_context = "\n\n".join(
+            [
+                context,
+                "Primary concepts already proposed. Your role is to support, clarify, or visually strengthen one of these concepts.",
+                render_proposal_context(ProposalBoard(cycle_number, proposals, [])),
+            ]
+        )
+        for support_index, role in enumerate(support_roles, start=1):
+            try:
+                output = role_runner(
+                    studio_config,
+                    roles_dir,
+                    role,
+                    support_context,
+                    timeout_seconds=role_timeout_seconds,
+                )
+            except (TimeoutError, OSError, RuntimeError, ValueError) as exc:
+                critiques.append(parse_proposal_critique(role, f"Verdict: BACKLOG\n- Proposal role failed: {exc}"))
+                continue
+            proposals.append(parse_agent_proposal(role, output, index=support_index))
+
+    critique_role_path = roles_dir / f"{CRITIQUE_ROLE}.md"
+    if proposals and critique_role_path.is_file():
+        _cycle_log(state_dir, cycle_number, "running proposal critique")
+        try:
+            critique_output = role_runner(
+                studio_config,
+                roles_dir,
+                CRITIQUE_ROLE,
+                "\n\n".join([context, render_proposal_context(ProposalBoard(cycle_number, proposals, []))]),
+                timeout_seconds=role_timeout_seconds,
+            )
+            critiques.append(parse_proposal_critique(CRITIQUE_ROLE, critique_output))
+        except (TimeoutError, OSError, RuntimeError, ValueError) as exc:
+            critiques.append(parse_proposal_critique(CRITIQUE_ROLE, f"Verdict: BACKLOG\n- QA Critic failed: {exc}"))
+
+    qa_critique = next((critique for critique in critiques if critique.author_role == CRITIQUE_ROLE), None)
+    selected_id = choose_selected_proposal(proposals, qa_critique)
+    board = ProposalBoard(cycle_number=cycle_number, proposals=proposals, critiques=critiques, selected_id=selected_id)
+    save_proposal_board(state_dir, board)
+    record_proposal_board(state_dir, board)
+    return board
+
+
+def _proposal_context(repo_root: Path, state_dir: Path, cycle_number: int) -> str:
+    return "\n".join(
+        [
+            f"Cycle number: {cycle_number}",
+            "",
+            "Studio mission:",
+            "Create meaningful collaboration between specialist agents. The game is the medium, not the point.",
+            "Avoid trivial numeric tweaks; propose concepts with player-facing identity, mechanic, and verification signal.",
+            "",
+            render_agenda_context(state_dir),
+            "",
+            "Recent cycle outcomes:",
+            recent_cycle_summaries(state_dir, before_cycle=cycle_number),
+            "",
+            "Recent blockers:",
+            recent_blocker_notes(state_dir, before_cycle=cycle_number),
+            "",
+            "Known game files:",
+            "\n".join(f"- {path}" for path in _known_repo_files(repo_root, scope="game")),
+        ]
+    )
+
+
 def _director_context(
     repo_root: Path,
     state_dir: Path,
@@ -1270,6 +1637,7 @@ def _director_context(
     objective: str,
     spec: str,
     apply_writes: bool,
+    proposal_board: ProposalBoard | None = None,
 ) -> str:
     branch = _git_output(repo_root, "rev-parse", "--abbrev-ref", "HEAD")
     commit = _git_output(repo_root, "rev-parse", "--short", "HEAD")
@@ -1282,11 +1650,11 @@ def _director_context(
         [
             "",
             "Write-mode rules:",
-            "- Objectives must request concrete, small game changes (game/src, game/tests, game/smoke).",
-            "- Pick one implementation file per cycle (game/src/ or game/smoke/); defer test edits to later cycles.",
-            "- After diff/patch validation failures, pick a smaller single-file change with obvious anchor code.",
+            "- Objectives must advance an accepted specialist proposal, not a hard-coded tiny chore.",
+            "- Prefer concepts with a player-facing mechanic, visual identity, and testable acceptance signal.",
+            "- Reject numeric-only stat tweaks unless they are part of a named mechanic from the proposal board.",
+            "- Keep implementation staged enough for one branch, but do not reduce the feature to meaningless single-line churn.",
             "- Do not pick verification-only objectives that forbid code changes.",
-            "- After a test-only merge, the next cycle must include a player-visible game/src/ or game/smoke/ change.",
             "- Avoid repeating objectives that recently blocked at reviewer or lint.",
         ]
         if apply_writes
@@ -1308,6 +1676,9 @@ def _director_context(
             "",
             "Recent blockers (do not repeat these failure patterns):",
             recent_blocker_notes(state_dir, before_cycle=cycle_number),
+            "",
+            "Specialist collaboration context:",
+            render_proposal_context(proposal_board),
             *(
                 [""] + churn_director_notes(state_dir, before_cycle=cycle_number)
                 if churn_director_notes(state_dir, before_cycle=cycle_number)
@@ -1322,29 +1693,11 @@ def _director_context(
                 if (constraint := load_latest_critic_constraint(state_dir, before_cycle=cycle_number))
                 else []
             ),
-            *(
-                [
-                    "",
-                    "Mandatory gameplay objective (use unless you have a better player-visible idea):",
-                    mandatory,
-                ]
-                if (mandatory := mandatory_gameplay_objective(state_dir, before_cycle=cycle_number))
-                else []
-            ),
-            *(
-                [
-                    "",
-                    "Suggested objective after repeated diff failures:",
-                    suggestion,
-                ]
-                if (suggestion := _suggested_write_objective(state_dir, before_cycle=cycle_number))
-                else []
-            ),
             "",
             f"Fallback objective if unsure: {objective}",
             f"Fallback spec if unsure: {spec}",
             "",
-            "Pick the next small player-visible gameplay or HUD improvement (not test-only churn).",
+            "Pick the next meaningful studio proposal to advance. Start with Proposal: <id>. Do not pick HP/stat-only tweaks.",
         ]
     )
 
@@ -1362,6 +1715,7 @@ def _run_director(
     role_runner: RoleRunner,
     role_timeout_seconds: int,
     apply_writes: bool = False,
+    proposal_board: ProposalBoard | None = None,
 ) -> str:
     if director_mode == DirectorMode.STATIC:
         director_output = f"Objective: {objective}\nReason: {spec}"
@@ -1377,6 +1731,7 @@ def _run_director(
                 objective=objective,
                 spec=spec,
                 apply_writes=apply_writes,
+                proposal_board=proposal_board,
             ),
             timeout_seconds=role_timeout_seconds,
         )
@@ -1392,6 +1747,7 @@ def _designer_context(
     director_output: str,
     *,
     apply_writes: bool = False,
+    proposal_board: ProposalBoard | None = None,
 ) -> str:
     file_summary = "\n".join(f"- {path}" for path in _known_repo_files(repo_root))
     command_summary = "\n".join(f"- {command}" for command in _known_test_commands(repo_root))
@@ -1399,9 +1755,9 @@ def _designer_context(
         [
             "",
             "Write-mode scope rules:",
-            "- List exactly ONE implementation file under game/src/ or game/smoke/ in In-scope files.",
-            "- Put game/tests/ updates in Out of scope; sparky2 will report regressions after src applies.",
-            "- Prefer editing existing functions over creating new modules.",
+            "- Accepted proposal bundles may include up to three implementation files under game/src/ or game/smoke/.",
+            "- Include focused game/tests/ updates when they are necessary to keep the accepted concept green.",
+            "- Prefer editing existing functions over creating new modules unless the proposal needs a new concept boundary.",
         ]
         if apply_writes
         else []
@@ -1415,6 +1771,9 @@ def _designer_context(
             "",
             "Recent blockers to avoid:",
             recent_blocker_notes(state_dir, before_cycle=cycle_number),
+            "",
+            "Specialist collaboration context:",
+            render_proposal_context(proposal_board),
             "",
             "Write a Designer spec only. No code, no diffs.",
             "Canvas HUD/overlay text uses ctx.fillText — do not specify toGlyphGrid() string checks for overlay text.",
@@ -1447,6 +1806,7 @@ def _run_designer(
     role_runner: RoleRunner,
     role_timeout_seconds: int,
     apply_writes: bool = False,
+    proposal_board: ProposalBoard | None = None,
 ) -> str:
     if director_mode == DirectorMode.STATIC:
         designer_output = "\n".join(
@@ -1483,6 +1843,7 @@ def _run_designer(
                 objective,
                 director_output,
                 apply_writes=apply_writes,
+                proposal_board=proposal_board,
             ),
             timeout_seconds=role_timeout_seconds,
         )
@@ -1499,6 +1860,7 @@ def _builder_context(
     designer_output: str,
     *,
     apply_writes: bool = False,
+    proposal_board: ProposalBoard | None = None,
 ) -> str:
     file_summary = "\n".join(f"- {path}" for path in _builder_repo_files(repo_root, designer_output))
     command_summary = "\n".join(f"- {command}" for command in _known_test_commands(repo_root))
@@ -1528,6 +1890,9 @@ def _builder_context(
         "Recent blockers to avoid:",
         recent_blocker_notes(state_dir, before_cycle=cycle_number),
         "",
+        "Specialist collaboration context:",
+        render_proposal_context(proposal_board),
+        "",
         mode_line,
         "Do not invent paths. Proposed changed files must match the Designer spec or be labeled as NEW.",
         extra_rules,
@@ -1539,11 +1904,10 @@ def _builder_context(
         command_summary,
     ]
     if apply_writes:
-        primary = primary_implementation_path(designer_output)
         allowed = allowed_builder_paths(designer_output)
-        if primary:
-            parts.extend(["", f"Primary file (edit ONLY this path unless adding a NEW file): `{primary}`"])
-        snippet_paths = [primary] if primary else _builder_repo_files(repo_root, designer_output)[:8]
+        if allowed:
+            parts.extend(["", "Accepted scope paths (edit only these paths unless adding a NEW file):", *[f"- `{path}`" for path in sorted(allowed)]])
+        snippet_paths = _builder_repo_files(repo_root, designer_output)[:8]
         snippets = _source_snippets(repo_root, snippet_paths, scoped_paths=allowed or set(_paths_from_designer_spec(designer_output)))
         if snippets:
             parts.extend(
@@ -1563,12 +1927,16 @@ def _reviewer_context(
     builder_output: str,
     *,
     apply_writes: bool = False,
+    proposal_board: ProposalBoard | None = None,
 ) -> str:
     parts = [
         f"Objective: {objective}",
         "",
         "Designer spec:",
         designer_output.strip(),
+        "",
+        "Specialist collaboration context:",
+        render_proposal_context(proposal_board),
         "",
         "Builder output to review:",
         builder_output.strip(),
@@ -1601,6 +1969,7 @@ def _run_reviewer(
     role_runner: RoleRunner,
     role_timeout_seconds: int,
     apply_writes: bool = False,
+    proposal_board: ProposalBoard | None = None,
 ) -> tuple[str, list[str]]:
     if director_mode == DirectorMode.STATIC:
         reviewer_output = "PASS"
@@ -1615,6 +1984,7 @@ def _run_reviewer(
                 designer_output,
                 builder_output,
                 apply_writes=apply_writes,
+                proposal_board=proposal_board,
             ),
             timeout_seconds=role_timeout_seconds,
         )
@@ -1695,6 +2065,7 @@ def _run_builder(
     role_timeout_seconds: int,
     apply_writes: bool = False,
     patch_validation_issues: list[str] | None = None,
+    proposal_board: ProposalBoard | None = None,
 ) -> str:
     if director_mode == DirectorMode.STATIC:
         return "\n".join(
@@ -1713,6 +2084,7 @@ def _run_builder(
         director_output,
         designer_output,
         apply_writes=apply_writes,
+        proposal_board=proposal_board,
     )
     if patch_validation_issues:
         context = "\n".join(
@@ -2028,10 +2400,7 @@ def _run_local_game_build_gate(repo_root: Path) -> list[str]:
 
 
 def _suggested_write_objective(state_dir: Path, *, before_cycle: int) -> str | None:
-    notes = recent_blocker_notes(state_dir, before_cycle=before_cycle).lower()
-    if "patch validation" not in notes and "diff validation" not in notes and "builder diff validation" not in notes:
-        return None
-    return "Increase player starting hp from 10 to 15 in game/src/engine.ts createGame()."
+    return None
 
 
 def _is_verification_only_objective(objective: str) -> bool:

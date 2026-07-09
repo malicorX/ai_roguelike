@@ -1,12 +1,10 @@
 from __future__ import annotations
 
-import json
-import urllib.error
-import urllib.request
 from pathlib import Path
 from typing import Any
 
-from studio.config import StudioConfig
+from studio.config import StudioConfig, prefer_nvidia_models
+from studio.model_client import chat_with_failover
 
 
 def render_role_prompt(roles_dir: Path, role: str, context: str) -> str:
@@ -30,26 +28,13 @@ def build_ollama_payload(config: StudioConfig, role: str, prompt: str) -> dict[s
 
 def run_role(config: StudioConfig, roles_dir: Path, role: str, context: str, timeout_seconds: int = 120) -> str:
     prompt = render_role_prompt(roles_dir, role, context)
-    payload = build_ollama_payload(config, role, prompt)
-    base_url = config.ollama_base_url_for(role)
-    response = _post_json(f"{base_url}/api/chat", payload, timeout_seconds=timeout_seconds)
-    message = response.get("message", {})
-    content = message.get("content")
-    if not isinstance(content, str):
-        raise ValueError(f"Ollama response for role {role!r} did not include message.content")
-    return content
-
-
-def _post_json(url: str, payload: dict[str, Any], timeout_seconds: int) -> dict[str, Any]:
-    data = json.dumps(payload).encode("utf-8")
-    request = urllib.request.Request(
-        url,
-        data=data,
-        headers={"Content-Type": "application/json"},
-        method="POST",
+    assigned_model = config.model_assignments.get(role)
+    content, endpoint = chat_with_failover(
+        role,
+        prompt,
+        assigned_model=assigned_model,
+        timeout_seconds=timeout_seconds,
+        prefer_nvidia=prefer_nvidia_models(),
     )
-    try:
-        with urllib.request.urlopen(request, timeout=timeout_seconds) as response:
-            return json.loads(response.read().decode("utf-8"))
-    except urllib.error.URLError as exc:
-        raise RuntimeError(f"Failed to call Ollama at {url}: {exc}") from exc
+    print(f"role {role}: served by {endpoint.display_name()}", flush=True)
+    return content

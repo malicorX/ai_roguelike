@@ -9,9 +9,9 @@ from studio.churn_guards import (
     has_player_visible_change,
     is_src_change,
     is_test_only_change,
-    mandatory_gameplay_objective,
     requires_src_change,
 )
+from studio.proposals import load_proposal_board, validate_proposal_board
 
 
 @dataclass(frozen=True)
@@ -67,6 +67,8 @@ def run_cycle_critic(
     changed_files: list[str],
 ) -> CycleCriticReport:
     scores = _score_cycle(
+        state_dir=state_dir,
+        cycle_number=cycle_number,
         blocked=blocked,
         merge_verdict=merge_verdict,
         changed_files=changed_files,
@@ -90,6 +92,8 @@ def write_cycle_critic(state_dir: Path, cycle_number: int, report: CycleCriticRe
 
 def _score_cycle(
     *,
+    state_dir: Path,
+    cycle_number: int,
     blocked: bool,
     merge_verdict: str | None,
     changed_files: list[str],
@@ -105,12 +109,28 @@ def _score_cycle(
         mechanical_depth = 1
     if blocked:
         scope_discipline = 2 if any("gate" in reason.lower() for reason in blocking_reasons) else 3
+    proposal_quality = _proposal_quality_score(state_dir, cycle_number)
     return {
         "player_visible": player_visible,
         "mechanical_depth": mechanical_depth,
         "test_value": test_value,
         "scope_discipline": scope_discipline,
+        "proposal_quality": proposal_quality,
     }
+
+
+def _proposal_quality_score(state_dir: Path, cycle_number: int) -> int:
+    board = load_proposal_board(state_dir, cycle_number)
+    if board is None:
+        return 2
+    issues = validate_proposal_board(board)
+    if issues:
+        return 1
+    selected = board.selected_proposal()
+    if selected is None:
+        return 1
+    supporting = board.supporting_proposals()
+    return 5 if supporting else 4
 
 
 def _next_cycle_constraint(
@@ -122,12 +142,7 @@ def _next_cycle_constraint(
     changed_files: list[str],
 ) -> str:
     if requires_src_change(state_dir, before_cycle=before_cycle):
-        if mandatory := mandatory_gameplay_objective(state_dir, before_cycle=before_cycle):
-            return (
-                "Mandatory: pick a player-visible gameplay change in game/src/ "
-                f"(suggested: {mandatory})"
-            )
-        return "Mandatory: include at least one player-visible change under game/src/ or game/smoke/ (not tests only)."
+        return "Mandatory: advance a specialist proposal with player-visible impact under game/src/ or game/smoke/ (not tests only)."
     if merge_verdict == "MERGED" and is_test_only_change(changed_files):
         return "Do not merge another test-only cycle; next change must touch game/src/ or game/smoke/."
     lowest_dimension = min(scores, key=scores.get)
@@ -135,4 +150,6 @@ def _next_cycle_constraint(
         return "Prioritize a player-visible gameplay or HUD improvement in game/src/."
     if lowest_dimension == "mechanical_depth" and scores["mechanical_depth"] <= 2:
         return "Prioritize a mechanics change in game/src/engine.ts, not another test-only diff."
+    if lowest_dimension == "proposal_quality" and scores["proposal_quality"] <= 2:
+        return "Improve the specialist proposal board before implementation; require a non-trivial selected concept and critique."
     return "Prefer a small player-visible gameplay improvement over test-only churn."

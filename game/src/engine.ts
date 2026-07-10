@@ -136,6 +136,34 @@ function resolveBumpCombat(game: GameState, enemy: Actor): GameState {
     }
   }
 
+  // If phase shift anchor and not dead, check for safe swap
+  if (enemy.id === "phase-shift-anchor" && damagedEnemy.hp > 0) {
+    // Check collision safety for both positions before swapping
+    const playerDestX = enemy.x;
+    const playerDestY = enemy.y;
+    const enemyDestX = game.player.x;
+    const enemyDestY = game.player.y;
+
+    const isPlayerDestWall = getTile(game.map, playerDestX, playerDestY) === "wall";
+    const isEnemyDestWall = getTile(game.map, enemyDestX, enemyDestY) === "wall";
+
+    // Check for other entities at destination tiles (excluding the current enemy being swapped)
+    const hasEntityAtPlayerDest = game.enemies.some(e => e.id !== enemy.id && e.x === playerDestX && e.y === playerDestY);
+    const hasEntityAtEnemyDest = game.enemies.some(e => e.id !== enemy.id && e.x === enemyDestX && e.y === enemyDestY);
+
+    // If both destinations clear, perform swap and return early with swapped state
+    if (!isPlayerDestWall && !isEnemyDestWall && !hasEntityAtPlayerDest && !hasEntityAtEnemyDest) {
+      return {
+        ...game,
+        turn: game.turn + 1,
+        player: { ...game.player, x: enemyDestX, y: enemyDestY }, // Player takes Enemy's position
+        enemies: game.enemies.map(e => e.id === enemy.id ? { ...damagedEnemy, x: playerDestX, y: playerDestY } : e), // Enemy (damaged) takes Player's position
+        log: [...game.log, ...combatLog, "Positions swapped!"],
+      };
+    }
+    // If blocked, fall through to normal combat resolution
+  }
+
   if (damagedEnemy.hp <= 0) {
     return {
       ...game,

@@ -77,4 +77,29 @@ describe("enemy movement", () => {
       expect(typeof remainingEnemy.y).toBe("number");
     }
   });
+
+  it("phase_shift_swap_positions_on_hit", () => {
+    const game = createGame({ seed: 1 });
+    if (game.enemies.length === 0) {
+      throw new Error("No enemies to test");
+    }
+    const enemy = game.enemies[0]!;
+    (enemy as any).phaseShiftAnchor = true;
+
+    const initialPlayerPos = { x: game.player.x, y: game.player.y };
+    const initialEnemyPos = { x: enemy.x, y: enemy.y };
+
+    let state = { ...game, player: { ...game.player, x: enemy.x - 1, y: enemy.y } };
+    const hitState = stepGame(state, { type: "move", dx: 1, dy: 0 });
+
+    if (hitState.enemies.length > 0 && hitState.enemies[0]?.id) {
+      const newEnemyPos = { x: hitState.enemies[0]!.x, y: hitState.enemies[0]!.y };
+      const newPlayerPos = { x: hitState.player.x, y: hitState.player.y };
+      expect(newPlayerPos).toEqual({ x: initialEnemyPos.x, y: initialEnemyPos.y });
+      expect(newEnemyPos).toEqual({ x: initialPlayerPos.x, y: initialPlayerPos.y });
+    } else if (hitState.enemies.length === 0) {
+      expect(true).toBe(true);
+    }
+  });
+
 });

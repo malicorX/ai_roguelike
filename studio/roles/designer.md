@@ -13,6 +13,7 @@ Rules:
 - For canvas glyph/tile drawing via `ctx.fillText`, require tests that mock canvas context or use smoke specs — never assert on `toGlyphGrid()` strings for overlay text.
 - List up to three implementation files under `game/src/` or `game/smoke/` when needed for the accepted proposal.
 - Include focused `game/tests/` updates when they are necessary for the accepted proposal to merge.
+- Every `game/tests/` path named in acceptance criteria must also appear in **In-scope files**.
 - Do not write code, unified diffs, or claim tests were run.
 - Do not expand scope beyond the Director objective.
 - Do not rewrite the Director objective into a verification-only baseline or "make tests green" spec without a concrete code change.

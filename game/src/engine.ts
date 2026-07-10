@@ -98,11 +98,49 @@ function resolveBumpCombat(game: GameState, enemy: Actor): GameState {
   };
 
   const combatLog = [`You hit ${enemy.id} for ${game.player.attack} damage.`];
+
+  // If repulsor beacon and not dead, handle push
+  if (enemy.id === "repulsor-beacon" && damagedEnemy.hp > 0) {
+    const dx = game.player.x - enemy.x;
+    const dy = game.player.y - enemy.y;
+    let moveDx = 0, moveDy = 0;
+    if (Math.abs(dx) >= Math.abs(dy)) {
+      moveDx = Math.sign(dx);
+      moveDy = 0;
+    } else {
+      moveDx = 0;
+      moveDy = Math.sign(dy);
+    }
+    const targetX = game.player.x + moveDx;
+    const targetY = game.player.y + moveDy;
+
+    const isWall = getTile(game.map, targetX, targetY) === "wall";
+    const hasEntity = game.enemies.some(e => e.x === targetX && e.y === targetY);
+
+    if (!isWall && !hasEntity) {
+      return {
+        ...game,
+        turn: game.turn, // unchanged
+        player: { ...game.player, x: targetX, y: targetY },
+        enemies: game.enemies.map(e => e.id === enemy.id ? damagedEnemy : e),
+        log: [...game.log, ...combatLog, `${enemy.id} repels you!`],
+      };
+    } else {
+      return {
+        ...game,
+        turn: game.turn, // unchanged
+        player: game.player,
+        enemies: game.enemies.map(e => e.id === enemy.id ? damagedEnemy : e),
+        log: [...game.log, ...combatLog, "The wall blocks your repulsion."],
+      };
+    }
+  }
+
   if (damagedEnemy.hp <= 0) {
     return {
       ...game,
       turn: game.turn + 1,
-      enemies: game.enemies.filter((candidate) => candidate.id !== enemy.id),
+      enemies: game.enemies.filter(e => e.id !== enemy.id),
       log: [...game.log, ...combatLog, `${enemy.id} dies.`],
     };
   }
@@ -114,7 +152,7 @@ function resolveBumpCombat(game: GameState, enemy: Actor): GameState {
       ...game.player,
       hp: game.player.hp - damagedEnemy.attack,
     },
-    enemies: game.enemies.map((candidate) => (candidate.id === enemy.id ? damagedEnemy : candidate)),
+    enemies: game.enemies.map(e => e.id === enemy.id ? damagedEnemy : e),
     log: [...game.log, ...combatLog, `${enemy.id} hits you for ${damagedEnemy.attack} damage.`],
   };
 }

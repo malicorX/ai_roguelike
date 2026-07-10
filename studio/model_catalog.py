@@ -7,7 +7,7 @@ from studio.config import (
     DEFAULT_MODEL,
     EVALUATION_ROLES,
     SPARKY1_OLLAMA_BASE_URL,
-    SPARKY2_OLLAMA_BASE_URL,
+    SPARKY1_OLLAMA_REMOTE_URL,
 )
 
 ModelProvider = Literal["ollama", "nvidia_nim"]
@@ -66,9 +66,9 @@ LOCAL_DEVELOPER_CHAIN: tuple[ModelEndpoint, ...] = (
 )
 
 LOCAL_EVALUATOR_CHAIN: tuple[ModelEndpoint, ...] = (
-    _ollama(DEFAULT_MODEL, SPARKY2_OLLAMA_BASE_URL, label="Agents-A1 sparky2"),
-    _ollama("qwen3:14b", SPARKY2_OLLAMA_BASE_URL, label="Qwen3 14B sparky2"),
-    _ollama("llama3.1:8b", SPARKY2_OLLAMA_BASE_URL, label="Llama 3.1 8B sparky2"),
+    _ollama(DEFAULT_MODEL, SPARKY1_OLLAMA_REMOTE_URL, label="Agents-A1 via sparky1"),
+    _ollama("qwen3:14b", SPARKY1_OLLAMA_REMOTE_URL, label="Qwen3 14B via sparky1"),
+    _ollama("llama3.1:8b", SPARKY1_OLLAMA_REMOTE_URL, label="Llama 3.1 8B via sparky1"),
 )
 
 
@@ -82,16 +82,19 @@ def is_nvidia_model_id(model: str) -> bool:
 
 
 def endpoint_for_assignment(model: str, *, role: str) -> ModelEndpoint:
+    base_url = (
+        SPARKY1_OLLAMA_REMOTE_URL
+        if role in EVALUATION_ROLES
+        else SPARKY1_OLLAMA_BASE_URL
+    )
     normalized = model.strip()
     if normalized.startswith("nvidia:"):
         return _nvidia(normalized.removeprefix("nvidia:"))
     if normalized.startswith("ollama:"):
         payload = normalized.removeprefix("ollama:")
-        base_url = SPARKY2_OLLAMA_BASE_URL if role in EVALUATION_ROLES else SPARKY1_OLLAMA_BASE_URL
         return _ollama(payload, base_url)
     if is_nvidia_model_id(normalized):
         return _nvidia(normalized)
-    base_url = SPARKY2_OLLAMA_BASE_URL if role in EVALUATION_ROLES else SPARKY1_OLLAMA_BASE_URL
     return _ollama(normalized, base_url)
 
 

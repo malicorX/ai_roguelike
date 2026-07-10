@@ -76,7 +76,11 @@ class EvaluationClient:
             [
                 "ssh",
                 self.remote_host,
-                f"cd {self.remote_repo} && python3 -m eval_lab.evaluate_candidate --repo . --request {remote_request} --out {remote_report}",
+                (
+                    f"cd {self.remote_repo} && "
+                    f"EVAL_OLLAMA_URL=http://sparky1:11434 "
+                    f"python3 -m eval_lab.evaluate_candidate --repo . --request {remote_request} --out {remote_report}"
+                ),
             ]
         )
         self._run_command(["scp", f"{self.remote_host}:{remote_report}", str(report_path)])

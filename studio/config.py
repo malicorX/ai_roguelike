@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 import os
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 
 DEFAULT_MODEL = "hf.co/InternScience/Agents-A1-Q4_K_M-GGUF:latest"
 SPARKY1_OLLAMA_BASE_URL = "http://127.0.0.1:11434"
-SPARKY2_OLLAMA_BASE_URL = "http://sparky2:11435"
+# sparky2 runs npm gates only; all Ollama inference uses sparky1 (other projects own sparky2 :11435).
+SPARKY1_OLLAMA_REMOTE_URL = "http://sparky1:11434"
+SPARKY2_OLLAMA_BASE_URL = SPARKY1_OLLAMA_REMOTE_URL
 
 EVALUATION_ROLES = frozenset({"art_director", "player", "tester", "visual_qa"})
 
@@ -26,7 +28,7 @@ class StudioConfig:
 
         return cls(
             model_assignments=parse_model_assignments(models),
-            evaluator_base_url=base_url or os.environ.get("EVAL_OLLAMA_URL", "http://127.0.0.1:11435"),
+            evaluator_base_url=base_url or os.environ.get("EVAL_OLLAMA_URL", SPARKY1_OLLAMA_REMOTE_URL),
         )
 
     def model_for(self, role: str) -> str:
@@ -36,6 +38,11 @@ class StudioConfig:
         if role in EVALUATION_ROLES:
             return self.evaluator_base_url
         return self.developer_base_url
+
+    def with_role_model(self, role: str, model: str) -> StudioConfig:
+        assignments = dict(self.model_assignments)
+        assignments[role] = model
+        return replace(self, model_assignments=assignments)
 
 
 def parse_model_assignments(raw: str) -> dict[str, str]:
@@ -67,4 +74,5 @@ def prefer_nvidia_models() -> bool:
         return False
     if raw in {"1", "true", "yes", "nvidia", "nvidia-first"}:
         return True
-    return any(os.environ.get(name, "").strip() for name in ("NVIDIA_API_KEY", "NVAPI_KEY"))
+    # auto: local by default; cloud only when explicitly requested via env
+    return False

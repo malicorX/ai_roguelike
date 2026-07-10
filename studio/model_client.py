@@ -39,18 +39,39 @@ def resolve_api_key(endpoint: ModelEndpoint) -> str | None:
 def is_rate_limit_error(exc: BaseException) -> bool:
     if isinstance(exc, urllib.error.HTTPError) and exc.code == 429:
         return True
+    return _has_transient_marker(str(exc).lower(), _RATE_LIMIT_MARKERS)
+
+
+def is_transient_model_error(exc: BaseException) -> bool:
+    if isinstance(exc, TimeoutError):
+        return True
+    if isinstance(exc, urllib.error.URLError) and isinstance(getattr(exc, "reason", None), TimeoutError):
+        return True
     message = str(exc).lower()
-    markers = (
-        "429",
-        "rate limit",
-        "rate-limit",
-        "too many requests",
-        "quota exceeded",
-        "usage limit",
-        "limit exceeded",
-        "out of limit",
-        "throttl",
-    )
+    return _has_transient_marker(message, _RATE_LIMIT_MARKERS) or _has_transient_marker(message, _TIMEOUT_MARKERS)
+
+
+_RATE_LIMIT_MARKERS = (
+    "429",
+    "rate limit",
+    "rate-limit",
+    "too many requests",
+    "quota exceeded",
+    "usage limit",
+    "limit exceeded",
+    "out of limit",
+    "throttl",
+)
+
+_TIMEOUT_MARKERS = (
+    "timed out",
+    "timeout",
+    "time out",
+    "deadline exceeded",
+)
+
+
+def _has_transient_marker(message: str, markers: tuple[str, ...]) -> bool:
     return any(marker in message for marker in markers)
 
 
@@ -78,7 +99,7 @@ def chat_with_failover(
             return content, endpoint
         except Exception as exc:  # noqa: BLE001 - routing inspects provider-specific failures
             attempts.append(f"{endpoint.display_name()} failed: {exc}")
-            if is_rate_limit_error(exc) and index + 1 < len(chain):
+            if is_transient_model_error(exc) and index + 1 < len(chain):
                 retry_after = _retry_after_seconds(exc)
                 if retry_after:
                     wait(min(retry_after, 5.0))

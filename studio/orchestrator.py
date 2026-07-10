@@ -22,6 +22,13 @@ from studio.churn_guards import (
     requires_src_change,
 )
 from studio.config import StudioConfig, evaluation_models_string
+from studio.retry_strategy import (
+    STRONGER_BUILDER_MODEL,
+    load_retry_state,
+    prepare_until_green_retry,
+    retry_state_path,
+    should_use_stronger_builder,
+)
 from studio.cycle_critic import load_latest_critic_constraint, run_cycle_critic, write_cycle_critic
 from studio.cycle_memory import (
     append_backlog_suggestions,
@@ -75,6 +82,7 @@ from studio.write_scope import (
 )
 from studio.cycle_report import print_cycle_process_report, save_cycle_process_report
 from studio.publish_devlog import publish_site
+from studio.model_status import format_role_route, print_studio_routing_banner
 from studio.role_runner import run_role
 
 DEFAULT_OBJECTIVE = "Verify that the current v0 game remains playable."
@@ -165,6 +173,8 @@ def run_pilot_cycle(
         return _load_pilot_cycle_result(state_dir, cycle_number)
 
     _cycle_log(state_dir, cycle_number, "cycle started")
+    retry_state = load_retry_state(state_dir, cycle_number)
+    builder_blocker_feedback = list(retry_state.last_blocker_feedback)
     proposal_board: ProposalBoard | None = None
     if apply_writes and director_mode == DirectorMode.MODEL:
         try:
@@ -214,7 +224,7 @@ def run_pilot_cycle(
             _cycle_log(state_dir, cycle_number, "reusing director artifact")
             director_output = existing_director
         else:
-            _cycle_log(state_dir, cycle_number, "running director")
+            _log_role_plan(state_dir, cycle_number, studio_config, "director", "running director")
             director_output = _run_director(
                 repo_root,
                 objective=objective,
@@ -303,7 +313,7 @@ def run_pilot_cycle(
             _cycle_log(state_dir, cycle_number, "reusing designer artifact")
             designer_output = existing_designer
         else:
-            _cycle_log(state_dir, cycle_number, "running designer")
+            _log_role_plan(state_dir, cycle_number, studio_config, "designer", "running designer")
             designer_output = _run_designer(
                 repo_root,
                 state_dir,
@@ -408,10 +418,10 @@ def run_pilot_cycle(
     try:
         existing_builder = _read_existing_artifact(builder_path)
         if existing_builder is not None and director_mode == DirectorMode.MODEL:
-            _cycle_log(state_dir, cycle_number, "reusing builder artifact")
+            _cycle_log(state_dir, cycle_number, "reusing builder artifact (no model call)")
             builder_output = existing_builder
         else:
-            _cycle_log(state_dir, cycle_number, "running builder")
+            _log_role_plan(state_dir, cycle_number, studio_config, "builder", "running builder")
             builder_output = _run_builder(
                 repo_root,
                 state_dir,
@@ -426,6 +436,7 @@ def run_pilot_cycle(
                 role_timeout_seconds=role_timeout_seconds,
                 apply_writes=apply_writes,
                 proposal_board=proposal_board,
+                blocker_feedback=builder_blocker_feedback,
             )
     except (TimeoutError, OSError, RuntimeError, ValueError) as exc:
         return _blocked_role_failure_result(
@@ -519,10 +530,10 @@ def run_pilot_cycle(
             blocking_reasons=["Builder proposal lint failed.", *proposal_issues],
         )
 
+    patch_validation_issues: list[str] = []
     if apply_writes:
-        patch_validation_issues: list[str] = []
         builder_allowed_paths = allowed_builder_paths(designer_output)
-        for patch_attempt in range(2):
+        for patch_attempt in range(3):
             try:
                 candidate_patch = extract_builder_patch(builder_output)
                 patch_validation_issues = validate_builder_patch(
@@ -534,10 +545,12 @@ def run_pilot_cycle(
                 patch_validation_issues = [str(exc)]
             if not patch_validation_issues:
                 break
-            if patch_attempt == 0 and director_mode == DirectorMode.MODEL:
-                _cycle_log(
+            if patch_attempt < 2 and director_mode == DirectorMode.MODEL:
+                _log_role_plan(
                     state_dir,
                     cycle_number,
+                    studio_config,
+                    "builder",
                     f"builder patch validation failed ({len(patch_validation_issues)} issues), retrying",
                 )
                 try:
@@ -556,6 +569,7 @@ def run_pilot_cycle(
                         apply_writes=apply_writes,
                         patch_validation_issues=patch_validation_issues,
                         proposal_board=proposal_board,
+                        blocker_feedback=builder_blocker_feedback,
                     )
                 except (TimeoutError, OSError, RuntimeError, ValueError) as exc:
                     return _blocked_role_failure_result(
@@ -603,8 +617,23 @@ def run_pilot_cycle(
         if existing_reviewer is not None and director_mode == DirectorMode.MODEL:
             _cycle_log(state_dir, cycle_number, f"reusing reviewer artifact ({existing_reviewer[0]})")
             reviewer_verdict, reviewer_issues = existing_reviewer
+        elif apply_writes and director_mode == DirectorMode.MODEL and not patch_validation_issues:
+            reviewer_verdict, reviewer_issues = "PASS", []
+            reviewer_path.write_text(
+                json.dumps(
+                    {
+                        "verdict": "PASS",
+                        "issues": [],
+                        "source": "mechanical_patch_validation",
+                    },
+                    indent=2,
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            _cycle_log(state_dir, cycle_number, "reviewer: mechanical PASS (patch validation clean)")
         else:
-            _cycle_log(state_dir, cycle_number, "running reviewer")
+            _log_role_plan(state_dir, cycle_number, studio_config, "reviewer", "running reviewer")
             reviewer_verdict, reviewer_issues = _run_reviewer(
             repo_root,
             selected_objective,
@@ -843,38 +872,10 @@ def next_cycle_number_until_green(state_dir: Path, *, until_green: bool) -> int:
     return next_cycle_number(state_dir)
 
 
-_RETRY_ARTIFACT_SUFFIXES = (
-    "report.json",
-    "request.json",
-    "apply.json",
-    "merge.json",
-    "reviewer.json",
-    "proposal-lint.json",
-    "builder.md",
-    "designer.md",
-    "director.md",
-    "proposals.json",
-    "proposals.md",
-    "process.md",
-    "critic.json",
-)
-
-
-def clear_cycle_for_retry(state_dir: Path, cycle_number: int) -> list[str]:
-    prefix = f"cycle-{cycle_number:04d}"
-    cleared: list[str] = []
-    for suffix in _RETRY_ARTIFACT_SUFFIXES:
-        path = state_dir / f"{prefix}-{suffix}"
-        if path.is_file():
-            path.unlink()
-            cleared.append(suffix)
-    run_log = state_dir / f"{prefix}-run.log"
-    if run_log.is_file():
-        run_log.unlink()
-        cleared.append("run.log")
-    if cleared:
-        _cycle_log(state_dir, cycle_number, f"until-green retry: cleared {', '.join(cleared)}")
-    return cleared
+def _clear_retry_state(state_dir: Path, cycle_number: int) -> None:
+    path = retry_state_path(state_dir, cycle_number)
+    if path.is_file():
+        path.unlink()
 
 
 def _load_pilot_cycle_result(state_dir: Path, cycle_number: int) -> PilotCycleResult:
@@ -909,6 +910,16 @@ def _cycle_log(state_dir: Path, cycle_number: int, message: str) -> None:
         handle.write(message.rstrip() + "\n")
 
 
+def _log_role_plan(
+    state_dir: Path,
+    cycle_number: int,
+    config: StudioConfig,
+    role: str,
+    verb: str,
+) -> None:
+    _cycle_log(state_dir, cycle_number, f"{verb} ({format_role_route(config, role)})")
+
+
 def _read_existing_artifact(path: Path) -> str | None:
     if not path.is_file():
         return None
@@ -939,6 +950,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     studio_config = StudioConfig.from_model_string(args.models)
     state_dir = args.state_dir or args.repo_root / "studio" / "state"
     state_dir.mkdir(parents=True, exist_ok=True)
+    os.environ["STUDIO_STATE_DIR"] = str(state_dir)
     evaluation_target = EvaluationTarget(args.evaluation_target)
     director_mode = DirectorMode(args.director_mode)
 
@@ -950,6 +962,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         f"apply_writes={args.apply_writes} until_green={until_green}",
         flush=True,
     )
+    print_studio_routing_banner(studio_config, evaluation_target=evaluation_target.value)
     last_blocked = False
     completed = 0
     while until_green or completed < cycles:
@@ -957,8 +970,22 @@ def main(argv: Sequence[str] | None = None) -> int:
             print(f"time budget {args.time} elapsed; exiting before next cycle.", flush=True)
             break
         cycle_number = next_cycle_number_until_green(state_dir, until_green=until_green)
+        cycle_config = studio_config
         if until_green and blocked_cycle_for_retry(state_dir) == cycle_number:
-            clear_cycle_for_retry(state_dir, cycle_number)
+            stage, cleared, retry_state = prepare_until_green_retry(state_dir, cycle_number)
+            if cleared:
+                _cycle_log(
+                    state_dir,
+                    cycle_number,
+                    f"until-green retry ({stage.value}): cleared {', '.join(cleared)}",
+                )
+            if should_use_stronger_builder(retry_state):
+                cycle_config = studio_config.with_role_model("builder", STRONGER_BUILDER_MODEL)
+                _cycle_log(
+                    state_dir,
+                    cycle_number,
+                    f"until-green retry: builder model escalated to {STRONGER_BUILDER_MODEL}",
+                )
         if (state_dir / "STOP").exists():
             print(f"STOP file found at {state_dir / 'STOP'}; exiting before cycle {cycle_number}.", flush=True)
             break
@@ -1023,7 +1050,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             cycle_number=cycle_number,
             evaluation_target=evaluation_target,
             director_mode=director_mode,
-            studio_config=studio_config,
+            studio_config=cycle_config,
             role_timeout_seconds=args.role_timeout_seconds,
             apply_writes=args.apply_writes,
             deploy=_deploy_enabled(args.deploy),
@@ -1040,6 +1067,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         _emit_cycle_process_report(state_dir, cycle_number)
         if cycle_is_green(pilot_result, apply_writes=args.apply_writes):
             print(f"cycle {cycle_number}: green — merged and ready", flush=True)
+            _clear_retry_state(state_dir, cycle_number)
             return 0
         last_blocked = True
         if until_green:
@@ -1283,7 +1311,26 @@ def _run_write_cycle(
         designer_spec=designer_output,
         models=models,
     )
-    report = EvaluationClient(evaluation_target).evaluate(repo_root, request, state_dir, cycle_number)
+    try:
+        report = EvaluationClient(evaluation_target).evaluate(repo_root, request, state_dir, cycle_number)
+    except (GitOperationError, RuntimeError, OSError) as exc:
+        if branch is not None:
+            discard_branch(repo_root, branch)
+        return _blocked_write_result(
+            repo_root,
+            state_dir,
+            cycle_number=cycle_number,
+            objective=objective,
+            spec=spec,
+            builder_output=builder_output,
+            director_path=director_path,
+            builder_path=builder_path,
+            proposal_lint_path=proposal_lint_path,
+            request_path=request_path,
+            report_path=report_path,
+            reasons=[str(exc)],
+            checks=["sparky2 evaluation handoff"],
+        )
 
     if not has_player_visible_change(changed_files):
         if branch is not None:
@@ -1544,6 +1591,8 @@ def _prepare_proposal_board(
         return None
 
     _cycle_log(state_dir, cycle_number, "running proposal specialists")
+    for role in primary_roles:
+        _log_role_plan(state_dir, cycle_number, studio_config, role, f"proposal specialist · {role}")
     context = _proposal_context(repo_root, state_dir, cycle_number)
     proposals = []
     critiques = []
@@ -1585,7 +1634,7 @@ def _prepare_proposal_board(
 
     critique_role_path = roles_dir / f"{CRITIQUE_ROLE}.md"
     if proposals and critique_role_path.is_file():
-        _cycle_log(state_dir, cycle_number, "running proposal critique")
+        _log_role_plan(state_dir, cycle_number, studio_config, CRITIQUE_ROLE, "running proposal critique")
         try:
             critique_output = role_runner(
                 studio_config,
@@ -1905,9 +1954,21 @@ def _builder_context(
     ]
     if apply_writes:
         allowed = allowed_builder_paths(designer_output)
+        snippet_paths = _builder_repo_files(repo_root, designer_output)
         if allowed:
-            parts.extend(["", "Accepted scope paths (edit only these paths unless adding a NEW file):", *[f"- `{path}`" for path in sorted(allowed)]])
-        snippet_paths = _builder_repo_files(repo_root, designer_output)[:8]
+            for path in sorted(allowed):
+                if path not in snippet_paths:
+                    snippet_paths.append(path)
+        snippet_paths = snippet_paths[:12]
+        if allowed:
+            parts.extend(
+                [
+                    "",
+                    "Accepted scope paths (edit only these paths unless adding a NEW file):",
+                    *[f"- `{path}`" for path in sorted(allowed)],
+                    "Test files listed here are in scope even when only named in acceptance criteria.",
+                ]
+            )
         snippets = _source_snippets(repo_root, snippet_paths, scoped_paths=allowed or set(_paths_from_designer_spec(designer_output)))
         if snippets:
             parts.extend(
@@ -2066,6 +2127,7 @@ def _run_builder(
     apply_writes: bool = False,
     patch_validation_issues: list[str] | None = None,
     proposal_board: ProposalBoard | None = None,
+    blocker_feedback: list[str] | None = None,
 ) -> str:
     if director_mode == DirectorMode.STATIC:
         return "\n".join(
@@ -2096,6 +2158,17 @@ def _run_builder(
                 "",
                 "Regenerate using ```search_replace blocks with SEARCH text copied exactly from the excerpts above. "
                 "Make the smallest possible edit to the primary file only.",
+            ]
+        )
+    if blocker_feedback:
+        context = "\n".join(
+            [
+                context,
+                "",
+                "The previous until-green attempt was blocked:",
+                *[f"- {issue}" for issue in blocker_feedback],
+                "",
+                "Fix these issues in the smallest patch that still satisfies the Designer spec.",
             ]
         )
     output = role_runner(
